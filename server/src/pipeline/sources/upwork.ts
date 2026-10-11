@@ -111,7 +111,7 @@ export class UpworkJobSource implements JobSource {
 
   constructor(
     private readonly creds: UpworkCredentials,
-    private readonly onTokenRefresh?: (tokens: { accessToken: string; refreshToken?: string }) => void,
+    private readonly onTokenRefresh?: (tokens: { accessToken: string; refreshToken?: string }) => void | Promise<void>,
   ) {
     this.accessToken = creds.accessToken;
   }
@@ -177,6 +177,6 @@ export class UpworkJobSource implements JobSource {
     const tokens = (await res.json()) as { access_token: string; refresh_token?: string };
     this.accessToken = tokens.access_token;
     if (tokens.refresh_token) this.creds.refreshToken = tokens.refresh_token;
-    this.onTokenRefresh?.({ accessToken: tokens.access_token, refreshToken: tokens.refresh_token });
+    await this.onTokenRefresh?.({ accessToken: tokens.access_token, refreshToken: tokens.refresh_token });
   }
 }

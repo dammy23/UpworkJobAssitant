@@ -31,10 +31,51 @@ export const applicationStatusEnum = pgEnum('application_status', [
   'declined',
 ]);
 
+export const aiProviderIdEnum = pgEnum('ai_provider_id', ['groq', 'claude', 'openai', 'ollama']);
+
 const timestamps = {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 };
+
+/**
+ * An Upwork account whose jobs are searched. Several can be connected (e.g. teammates);
+ * Upwork allows one freelancer account per person. Secrets are stored encrypted.
+ * An account with no access token uses sample jobs.
+ */
+export const upworkAccounts = pgTable('upwork_accounts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(), // whose account, e.g. "Kemi"
+  email: text('email').notNull().default(''),
+  clientId: text('client_id'),
+  clientSecretEnc: text('client_secret_enc'),
+  accessTokenEnc: text('access_token_enc'),
+  refreshTokenEnc: text('refresh_token_enc'),
+  lastSearchAt: timestamp('last_search_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  ...timestamps,
+});
+
+/** One row per AI provider. `position` sets the default order; lower runs first. */
+export const aiProviders = pgTable('ai_providers', {
+  id: aiProviderIdEnum('id').primaryKey(),
+  enabled: boolean('enabled').notNull().default(false),
+  apiKeyEnc: text('api_key_enc'),
+  baseUrl: text('base_url'), // Ollama server, or a custom OpenAI-compatible endpoint
+  model: text('model').notNull(),
+  position: integer('position').notNull(),
+  lastTestAt: timestamp('last_test_at', { withTimezone: true }),
+  lastTestOk: boolean('last_test_ok'),
+  lastTestMessage: text('last_test_message'),
+  ...timestamps,
+});
+
+/** Small key/value store for app-wide settings (Telegram, etc.). Secret values are encrypted. */
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * An applier is a saved search + proposal profile. It works for any kind of role
@@ -45,6 +86,10 @@ export const appliers = pgTable('appliers', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
   active: boolean('active').notNull().default(true),
+  upworkAccountId: uuid('upwork_account_id')
+    .notNull()
+    .references(() => upworkAccounts.id, { onDelete: 'restrict' }),
+  aiProvider: aiProviderIdEnum('ai_provider'), // null = use the default order
 
   // What to look for
   category: text('category'), // Upwork category name, null = any
@@ -182,6 +227,9 @@ export const applications = pgTable(
   (t) => [uniqueIndex('applications_match_idx').on(t.matchId)],
 );
 
+export type UpworkAccount = typeof upworkAccounts.$inferSelect;
+export type AiProvider = typeof aiProviders.$inferSelect;
+export type AiProviderId = AiProvider['id'];
 export type Applier = typeof appliers.$inferSelect;
 export type NewApplier = typeof appliers.$inferInsert;
 export type Material = typeof materials.$inferSelect;

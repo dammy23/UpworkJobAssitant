@@ -1,12 +1,12 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { appliers, jobMatches, jobs, materials, type Applier, type Job } from '../db/schema.js';
+import { appliers, jobMatches, jobs, materials, upworkAccounts, type Applier, type Job } from '../db/schema.js';
+import { jobSourceFor } from '../services/accounts.js';
 import { applyFilters, searchTermsFor } from './filters.js';
 import { formatBudget } from './format.js';
-import { getLlm } from './llm.js';
+import { llmFor } from './llm.js';
 import { sendDraftAlert } from './notify.js';
-import { PROMPT_VERSION, type ApplierContext } from './prompts.js';
-import { getJobSource } from './sources/index.js';
+import { PROMPT_VERSION, type ApplierContext, type PromptJob } from './prompts.js';
 import type { NormalizedJob } from './types.js';
 
 export interface RunSummary {
@@ -22,6 +22,10 @@ export interface RunSummary {
 
 const SEARCH_LIMIT = 50;
 const running = new Set<string>();
+
+export function isRunning(applierId: string): boolean {
+  return running.has(applierId);
+}
 
 async function upsertJob(job: NormalizedJob): Promise<Job> {
   const values = {
@@ -46,15 +50,13 @@ async function upsertJob(job: NormalizedJob): Promise<Job> {
   const [row] = await db
     .insert(jobs)
     .values(values)
-    .onConflictDoUpdate({
-      target: jobs.upworkId,
-      set: { ...values, fetchedAt: new Date() },
-    })
+    .onConflictDoUpdate({ target: jobs.upworkId, set: { ...values, fetchedAt: new Date() } })
     .returning();
   return row;
 }
 
-async function loadContext(applier: Applier): Promise<ApplierContext> {
+/** What the LLM needs to know about the applier: profile, resume text and past work. */
+export async function loadContext(applier: Applier): Promise<ApplierContext> {
   const rows = await db.select().from(materials).where(eq(materials.applierId, applier.id));
   const resume = rows.find((m) => m.kind === 'resume');
   return {
@@ -67,10 +69,19 @@ async function loadContext(applier: Applier): Promise<ApplierContext> {
   };
 }
 
+export function jobToPrompt(job: Job): PromptJob {
+  return {
+    ...job,
+    jobType: job.jobType === 'hourly' ? 'hourly' : 'fixed',
+    experienceLevel: (job.experienceLevel as PromptJob['experienceLevel']) ?? null,
+  };
+}
+
 /** Fetch, filter, score and draft for one applier. Never submits anything to Upwork. */
 export async function runApplier(applierId: string): Promise<RunSummary> {
   const [applier] = await db.select().from(appliers).where(eq(appliers.id, applierId));
   if (!applier) throw new Error(`Applier ${applierId} not found`);
+  const [account] = await db.select().from(upworkAccounts).where(eq(upworkAccounts.id, applier.upworkAccountId));
 
   const summary: RunSummary = {
     applierId,
@@ -84,21 +95,28 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
   };
 
   if (running.has(applierId)) {
-    summary.errors.push('A run for this applier is already in progress.');
+    summary.errors.push('This applier is already checking for jobs.');
     return summary;
   }
   running.add(applierId);
 
   try {
-    const source = getJobSource();
-    const llm = getLlm();
+    const source = jobSourceFor(account);
+    const llm = await llmFor(applier.aiProvider);
     const ctx = await loadContext(applier);
 
-    const found = await source.search({
-      terms: searchTermsFor(applier),
-      category: applier.category,
-      limit: SEARCH_LIMIT,
-    });
+    let found: NormalizedJob[];
+    try {
+      found = await source.search({ terms: searchTermsFor(applier), category: applier.category, limit: SEARCH_LIMIT });
+      await db
+        .update(upworkAccounts)
+        .set({ lastSearchAt: new Date(), lastError: null })
+        .where(eq(upworkAccounts.id, account.id));
+    } catch (err) {
+      const message = (err as Error).message;
+      await db.update(upworkAccounts).set({ lastError: message.slice(0, 500) }).where(eq(upworkAccounts.id, account.id));
+      throw new Error(`Couldn't search Upwork for ${account.name}: ${message}`);
+    }
     summary.fetched = found.length;
 
     for (const nj of found) {
@@ -116,12 +134,7 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
 
         const filter = applyFilters(applier, nj);
         if (!filter.pass) {
-          await db.insert(jobMatches).values({
-            applierId: applier.id,
-            jobId: job.id,
-            status: 'filtered',
-            filterReason: filter.reason,
-          });
+          await db.insert(jobMatches).values({ applierId: applier.id, jobId: job.id, status: 'filtered', filterReason: filter.reason });
           summary.filtered++;
           continue;
         }
@@ -153,7 +166,7 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
             reasons: scored.reasons,
             redFlags: scored.redFlags,
             draft: draft.text,
-            model: `${scored.model} / ${draft.model}`,
+            model: scored.model === draft.model ? scored.model : `${scored.model} / ${draft.model}`,
             promptVersion: PROMPT_VERSION,
           })
           .returning();
@@ -161,6 +174,7 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
 
         if (applier.telegramEnabled) {
           const sent = await sendDraftAlert({
+            accountName: account.name,
             applierName: applier.name,
             jobTitle: job.title,
             jobUrl: job.url,
@@ -169,9 +183,7 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
             reasons: scored.reasons,
             draft: draft.text,
           });
-          if (sent) {
-            await db.update(jobMatches).set({ notifiedAt: new Date() }).where(eq(jobMatches.id, match.id));
-          }
+          if (sent) await db.update(jobMatches).set({ notifiedAt: new Date() }).where(eq(jobMatches.id, match.id));
         }
       } catch (err) {
         summary.errors.push(`${nj.title}: ${(err as Error).message}`);
@@ -191,11 +203,9 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
 export async function runDueAppliers(opts: { force?: boolean } = {}): Promise<RunSummary[]> {
   const active = await db.select().from(appliers).where(eq(appliers.active, true));
   const now = Date.now();
-  const due = active.filter(
-    (a) => opts.force || !a.lastRunAt || now - a.lastRunAt.getTime() >= a.scheduleMinutes * 60_000,
-  );
+  const due = active.filter((a) => opts.force || !a.lastRunAt || now - a.lastRunAt.getTime() >= a.scheduleMinutes * 60_000);
   const results: RunSummary[] = [];
-  // One at a time keeps us well inside free-tier LLM rate limits.
+  // One at a time keeps us inside free-tier LLM rate limits.
   for (const a of due) results.push(await runApplier(a.id));
   return results;
 }

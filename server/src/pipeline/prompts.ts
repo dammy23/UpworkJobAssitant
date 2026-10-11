@@ -1,7 +1,10 @@
 import type { Applier } from '../db/schema.js';
 import type { FilterableJob } from './filters.js';
 
-export const PROMPT_VERSION = 'v1';
+export const PROMPT_VERSION = 'v2';
+
+export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+export type RewriteInstruction = 'new' | 'shorter' | 'warmer' | 'specific';
 
 export interface ApplierContext {
   applier: Pick<
@@ -67,16 +70,16 @@ function describeFreelancer(ctx: ApplierContext): string {
   ].join('\n');
 }
 
-export function scoringMessages(ctx: ApplierContext, job: PromptJob) {
+export function scoringMessages(ctx: ApplierContext, job: PromptJob): ChatMessage[] {
   return [
     {
       role: 'system' as const,
       content:
         'You screen Upwork job posts for a freelancer. The freelancer can work in any field (admin, writing, design, ' +
         'accounting, customer service, development and so on). Judge fit only from the facts given. ' +
-        'Reply with JSON only: {"score": integer 0-100, "reasons": string (one or two short sentences on why it fits), ' +
-        '"red_flags": string (short, or empty)}. Score 80+ only when the skills clearly match, the budget is reasonable ' +
-        'for the work, and the client looks serious.',
+        'Reply with JSON only: {"score": integer 0-100, "reasons": array of 1-3 short sentences on why it fits, ' +
+        '"red_flags": array of 0-2 short sentences on concerns}. Score 80+ only when the skills clearly match, the budget ' +
+        'is reasonable for the work, and the client looks serious. Score under 50 when the core skills are missing.',
     },
     {
       role: 'user' as const,
@@ -85,9 +88,9 @@ export function scoringMessages(ctx: ApplierContext, job: PromptJob) {
   ];
 }
 
-export function draftingMessages(ctx: ApplierContext, job: PromptJob) {
+function draftRules(ctx: ApplierContext): string[] {
   const a = ctx.applier;
-  const rules = [
+  return [
     `Write in this tone: ${a.tone}.`,
     `Keep it under ${a.maxWords} words.`,
     "Open with the client's problem or goal, not with the freelancer's name or a greeting formula.",
@@ -98,19 +101,40 @@ export function draftingMessages(ctx: ApplierContext, job: PromptJob) {
     ctx.hasVideo ? 'You may add one short line saying a short intro video is attached.' : null,
     a.bidRate ? `If rate comes up, the freelancer charges $${a.bidRate}/hr.` : null,
     a.drafterInstructions ? `Extra instructions from the freelancer: ${a.drafterInstructions}` : null,
-  ].filter(Boolean);
+  ].filter((r): r is string => Boolean(r));
+}
 
+const DRAFTER =
+  'You draft Upwork proposals that the freelancer will read, edit and submit themselves. ' +
+  'Write the proposal text only, as the freelancer, in the first person. Output nothing else.';
+
+export function draftingMessages(ctx: ApplierContext, job: PromptJob): ChatMessage[] {
   return [
+    { role: 'system', content: `${DRAFTER}\n\nRules:\n- ${draftRules(ctx).join('\n- ')}` },
+    { role: 'user', content: `FREELANCER\n${describeFreelancer(ctx)}\n\nJOB POST\n${describeJob(job)}` },
+  ];
+}
+
+const REWRITE_ASKS: Record<RewriteInstruction, string> = {
+  new: 'Write a fresh version with a different opening and a different past project if one fits.',
+  shorter: 'Make it about half as long. Keep the opening idea and the closing question.',
+  warmer: 'Make it warmer and more personal, without becoming informal or gushing.',
+  specific: 'Make it more specific to this job: name the client’s tools, tasks or goals from the post.',
+};
+
+export function rewriteMessages(
+  ctx: ApplierContext,
+  job: PromptJob,
+  current: string,
+  instruction: RewriteInstruction,
+): ChatMessage[] {
+  return [
+    { role: 'system', content: `${DRAFTER}\n\nRules:\n- ${draftRules(ctx).join('\n- ')}` },
     {
-      role: 'system' as const,
+      role: 'user',
       content:
-        'You draft Upwork proposals that the freelancer will read, edit and submit themselves. ' +
-        'Write the proposal text only, as the freelancer, in the first person.\n\nRules:\n- ' +
-        rules.join('\n- '),
-    },
-    {
-      role: 'user' as const,
-      content: `FREELANCER\n${describeFreelancer(ctx)}\n\nJOB POST\n${describeJob(job)}`,
+        `FREELANCER\n${describeFreelancer(ctx)}\n\nJOB POST\n${describeJob(job)}\n\n` +
+        `CURRENT DRAFT\n${current}\n\nTASK\n${REWRITE_ASKS[instruction]}`,
     },
   ];
 }

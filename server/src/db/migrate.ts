@@ -1,12 +1,15 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { config } from '../config.js';
 import { db, pool } from './client.js';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-// src/db -> server/drizzle (works from src/ with tsx and from dist/ after build)
-const migrationsFolder = path.resolve(here, '../../drizzle');
+export async function runMigrations(): Promise<void> {
+  await migrate(db, { migrationsFolder: config.migrationsDir });
+}
 
-await migrate(db, { migrationsFolder });
-console.log('Migrations applied.');
-await pool.end();
+// `npm run db:migrate`
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  await runMigrations();
+  console.log('Migrations applied.');
+  await pool.end();
+}
