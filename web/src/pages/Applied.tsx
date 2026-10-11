@@ -4,14 +4,19 @@ import { api, applicationsCsvUrl, errorMessage } from '../api/client';
 import { qk, useAccounts, useApplications, useAppliers } from '../api/queries';
 import type { Application, ApplicationList, AppStatus } from '../api/types';
 import { Avatar, Empty, ErrorState, Icon, Loading } from '../components/ui';
-import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER, changeDate, plural, shortDate } from '../lib/format';
+import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER, changeDate, money, plural, shortDate } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 
 type Filter = 'all' | AppStatus;
 
+const SENT_BY: Record<Application['submittedVia'], string> = { manual: 'You, on Upwork', api: 'The app', simulated: 'Test send' };
+function SentBy({ a }: { a: Application }) {
+  return <span className={a.submittedVia === 'simulated' ? 'mut' : undefined}>{SENT_BY[a.submittedVia]}</span>;
+}
+
 function summary(list: ApplicationList): string {
   const c = list.counts;
-  if (c.all === 0) return 'Nothing sent yet. Proposals you mark as submitted in Review show up here.';
+  if (c.all === 0) return 'Nothing sent yet. Proposals sent from Review show up here.';
   const oldest = list.items.reduce<string | null>((m, a) => (!m || a.appliedAt < m ? a.appliedAt : m), null);
   const since = oldest ? ` since ${shortDate(oldest)}` : '';
   const hired = c.hired ?? 0;
@@ -50,7 +55,19 @@ function useRowParts(a: Application) {
   const detail = (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, paddingTop: 16 }}>
       <div style={{ flex: '2 1 380px', minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>What you sent</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 20px', fontSize: 14, marginBottom: 12 }}>
+          <span>
+            <span className="mut">Bid </span>
+            <strong>{a.bidAmount ? money(a.bidAmount) : 'Not recorded'}</strong>
+          </span>
+          <span>
+            <span className="mut">How it was sent: </span>
+            <strong>
+              <SentBy a={a} />
+            </strong>
+          </span>
+        </div>
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>What was sent</div>
         <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.6, whiteSpace: 'pre-line', maxWidth: '70ch' }}>{a.proposalText || 'No text was saved with this one.'}</p>
       </div>
       <div style={{ flex: '1 1 240px', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -117,6 +134,9 @@ function TableRow({ a, open, onToggle }: { a: Application; open: boolean; onTogg
             {a.account.name}
           </span>
         </td>
+        <td className="td" style={{ whiteSpace: 'nowrap', fontSize: 14 }}>
+          <SentBy a={a} />
+        </td>
         <td className="td" style={{ whiteSpace: 'nowrap' }}>
           {shortDate(a.appliedAt)}
         </td>
@@ -130,7 +150,7 @@ function TableRow({ a, open, onToggle }: { a: Application; open: boolean; onTogg
       </tr>
       {open && (
         <tr id={'d-' + a.id}>
-          <td colSpan={6} style={{ padding: '0 16px 20px 42px', borderBottom: '1px solid #E4EAE8', background: '#F7F9F8' }}>
+          <td colSpan={7} style={{ padding: '0 16px 20px 42px', borderBottom: '1px solid #E4EAE8', background: '#F7F9F8' }}>
             {detail}
           </td>
         </tr>
@@ -149,7 +169,7 @@ function CardRow({ a, open, onToggle }: { a: Application; open: boolean; onToggl
           {pill}
         </div>
         <div style={{ fontSize: 13, color: '#5A706B', marginTop: 6 }}>
-          {a.account.name}, {a.applier.name}. Sent {shortDate(a.appliedAt)}
+          {a.account.name}, {a.applier.name}. Sent {shortDate(a.appliedAt)} {a.submittedVia === 'manual' ? 'by you on Upwork' : a.submittedVia === 'api' ? 'by the app' : '(test send)'}
         </div>
         {a.notes && !open && <div style={{ fontSize: 13, marginTop: 8, padding: '8px 10px', borderRadius: 8, background: '#F7F9F8' }}>{a.notes}</div>}
       </button>
@@ -270,7 +290,7 @@ export function AppliedPage() {
         <Empty title={total === 0 ? 'No applied jobs yet' : 'Nothing matches these filters'}>
           <p className="mut" style={{ margin: 0, lineHeight: 1.5 }}>
             {total === 0
-              ? 'When you submit a proposal on Upwork, press "I\'ve submitted it" in Review so it is saved here.'
+              ? 'Proposals the app sends for you appear here. If you send one yourself on Upwork, use "Already sent it yourself?" in Review so it is saved here too.'
               : 'Try another status, account or applier.'}
           </p>
         </Empty>
@@ -282,6 +302,7 @@ export function AppliedPage() {
                 <tr>
                   <th className="th" scope="col">Job</th>
                   <th className="th" scope="col">Account</th>
+                  <th className="th" scope="col">Sent by</th>
                   <th className="th" scope="col">Sent</th>
                   <th className="th" scope="col" style={{ textAlign: 'right' }}>Connects</th>
                   <th className="th" scope="col">Status</th>

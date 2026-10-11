@@ -42,6 +42,7 @@ export const ApplierInputSchema = z.object({
   tone: z.string().trim().min(1).max(100),
   maxWords: z.number().int().min(40).max(500),
   bidRate: nullableInt(1000),
+  defaultDuration: z.string().trim().min(1).max(100).default('Less than 1 month'),
   drafterInstructions: z.string().max(2000),
   scoreThreshold: z.number().int().min(0).max(100),
   scheduleMinutes: z.number().int().min(15).max(24 * 60),

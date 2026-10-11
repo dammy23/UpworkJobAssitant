@@ -18,10 +18,14 @@ export const matchStatusEnum = pgEnum('match_status', [
   'filtered', // failed a hard filter
   'below_threshold', // scored, but under the applier's minimum
   'pending_review', // drafted and waiting for the user
-  'applied', // user submitted on Upwork and marked it applied
+  'applied', // submitted (through the app, or by the user on Upwork)
   'skipped', // user skipped it
   'bad_match', // user flagged it as a bad match (feedback for tuning)
+  'queued', // user approved it; waiting for the send queue
+  'sending', // the send queue is submitting it now
+  'submit_failed', // Upwork refused it or the call failed; see submit_error
 ]);
+export const submittedViaEnum = pgEnum('submitted_via', ['manual', 'api', 'simulated']);
 export const applicationStatusEnum = pgEnum('application_status', [
   'applied',
   'viewed',
@@ -53,6 +57,20 @@ export const upworkAccounts = pgTable('upwork_accounts', {
   refreshTokenEnc: text('refresh_token_enc'),
   lastSearchAt: timestamp('last_search_at', { withTimezone: true }),
   lastError: text('last_error'),
+
+  // Upwork sign-in
+  oauthState: text('oauth_state'),
+  oauthStateAt: timestamp('oauth_state_at', { withTimezone: true }),
+  connectedAt: timestamp('connected_at', { withTimezone: true }),
+  upworkUserName: text('upwork_user_name'),
+  tenantId: text('tenant_id'), // organization id sent as X-Upwork-API-TenantId
+
+  // Safety limits for sending proposals from this account
+  dailyProposalCap: integer('daily_proposal_cap').notNull().default(10),
+  minGapSeconds: integer('min_gap_seconds').notNull().default(180),
+  weeklyConnectsBudget: integer('weekly_connects_budget'), // null = no budget
+  lastSubmitAt: timestamp('last_submit_at', { withTimezone: true }),
+  nextSubmitAt: timestamp('next_submit_at', { withTimezone: true }), // last send + gap + a little randomness
   ...timestamps,
 });
 
@@ -115,6 +133,7 @@ export const appliers = pgTable('appliers', {
   tone: text('tone').notNull().default('Direct and specific'),
   maxWords: integer('max_words').notNull().default(150),
   bidRate: integer('bid_rate'), // USD/hr, optional
+  defaultDuration: text('default_duration').notNull().default('Less than 1 month'),
   drafterInstructions: text('drafter_instructions').notNull().default(''),
 
   // Scoring and schedule
@@ -169,6 +188,8 @@ export const jobs = pgTable(
     clientTotalSpend: integer('client_total_spend'),
     proposalsCount: integer('proposals_count'),
     postedAt: timestamp('posted_at', { withTimezone: true }),
+    questions: text('questions').array().notNull().default([]), // the client's screening questions
+    connectsRequired: integer('connects_required'), // Connects to apply, when known
     raw: jsonb('raw'),
     fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -195,6 +216,18 @@ export const jobMatches = pgTable(
     model: text('model'),
     promptVersion: text('prompt_version'),
     notifiedAt: timestamp('notified_at', { withTimezone: true }),
+    telegramMessageId: integer('telegram_message_id'),
+
+    // What will be sent with the proposal
+    bidAmount: integer('bid_amount'), // USD: hourly rate, or fixed total
+    duration: text('duration'),
+    answers: jsonb('answers').$type<{ question: string; answer: string }[]>().notNull().default([]),
+
+    // Send queue
+    queuedAt: timestamp('queued_at', { withTimezone: true }),
+    approvedVia: text('approved_via'), // 'app' | 'telegram'
+    submitAttempts: integer('submit_attempts').notNull().default(0),
+    submitError: text('submit_error'),
     ...timestamps,
   },
   (t) => [
@@ -219,6 +252,9 @@ export const applications = pgTable(
       .references(() => jobs.id, { onDelete: 'cascade' }),
     proposalText: text('proposal_text').notNull(),
     connectsSpent: integer('connects_spent'),
+    bidAmount: integer('bid_amount'),
+    submittedVia: submittedViaEnum('submitted_via').notNull().default('manual'),
+    upworkProposalId: text('upwork_proposal_id'),
     status: applicationStatusEnum('status').notNull().default('applied'),
     notes: text('notes').notNull().default(''),
     appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),

@@ -12,7 +12,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=../.env src/db/migrate.ts",
     "db:seed": "tsx --env-file-if-exists=../.env src/db/seed.ts",
-    "pipeline:once": "tsx --env-file-if-exists=../.env src/pipeline/run-once.ts"
+    "pipeline:once": "tsx --env-file-if-exists=../.env src/pipeline/run-once.ts",
+    "upwork:schema": "tsx --env-file-if-exists=../.env src/upwork-schema.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

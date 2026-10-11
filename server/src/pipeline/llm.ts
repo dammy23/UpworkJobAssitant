@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import type { AiProviderId } from '../db/schema.js';
 import { credentialsOf, type ProviderCredentials, usableProviders } from '../services/providers.js';
 import {
+  answerMessages,
   draftingMessages,
   rewriteMessages,
   scoringMessages,
@@ -30,6 +31,17 @@ export interface Llm {
   score(ctx: ApplierContext, job: PromptJob): Promise<ScoreResult>;
   draft(ctx: ApplierContext, job: PromptJob): Promise<TextResult>;
   rewrite(ctx: ApplierContext, job: PromptJob, current: string, instruction: RewriteInstruction): Promise<TextResult>;
+  /** Answers the client's screening questions, one string per question, in order. */
+  answer(ctx: ApplierContext, job: PromptJob, questions: string[], coverLetter: string): Promise<string[]>;
+}
+
+/** Reads {"answers": [...]} from a model reply; pads or trims to the number of questions. */
+export function parseAnswersJson(text: string, count: number): string[] {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('No JSON in model reply');
+  const obj = JSON.parse(match[0]) as { answers?: unknown };
+  const list = Array.isArray(obj.answers) ? obj.answers.map((a) => String(a ?? '').trim()) : [];
+  return Array.from({ length: count }, (_, i) => list[i] ?? '');
 }
 
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
@@ -80,6 +92,12 @@ abstract class ChatLlm implements Llm {
     const text = cleanText(await this.chat(draftingMessages(ctx, job), { json: false, temperature: 0.7 }));
     if (!text) throw new Error('Empty draft from model');
     return { text, model: this.label() };
+  }
+
+  async answer(ctx: ApplierContext, job: PromptJob, questions: string[], coverLetter: string): Promise<string[]> {
+    if (questions.length === 0) return [];
+    const text = await this.chat(answerMessages(ctx, job, questions, coverLetter), { json: true, temperature: 0.4 });
+    return parseAnswersJson(cleanText(text), questions.length);
   }
 
   async rewrite(ctx: ApplierContext, job: PromptJob, current: string, instruction: RewriteInstruction): Promise<TextResult> {
@@ -179,6 +197,11 @@ export class HeuristicLlm implements Llm {
   async rewrite(ctx: ApplierContext, job: PromptJob, current: string): Promise<TextResult> {
     return { text: current, model: 'offline:template' };
   }
+
+  /** Leaves answers blank: without an AI provider, you answer screening questions yourself. */
+  async answer(_ctx: ApplierContext, _job: PromptJob, questions: string[]): Promise<string[]> {
+    return questions.map(() => '');
+  }
 }
 
 /** Tries each provider in order; the first that succeeds wins. */
@@ -210,6 +233,9 @@ export class FallbackLlm implements Llm {
   }
   rewrite(ctx: ApplierContext, job: PromptJob, current: string, instruction: RewriteInstruction) {
     return this.tryEach((p) => p.rewrite(ctx, job, current, instruction));
+  }
+  answer(ctx: ApplierContext, job: PromptJob, questions: string[], coverLetter: string) {
+    return this.tryEach((p) => p.answer(ctx, job, questions, coverLetter));
   }
 }
 

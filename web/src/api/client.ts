@@ -9,7 +9,9 @@ import type {
   ApplierInput,
   ApplierSummary,
   Draft,
+  DraftEdits,
   DraftSort,
+  DraftState,
   FindChatResult,
   Material,
   MaterialPatch,
@@ -22,6 +24,8 @@ import type {
   RewriteInstruction,
   RunSummary,
   SkipReason,
+  SubmitItem,
+  SubmitResult,
   TelegramInput,
   TelegramSettings,
   Template,
@@ -102,6 +106,7 @@ export const api = {
   createAccount: (input: AccountInput) => post<Account>('/accounts', input),
   updateAccount: (id: string, input: Partial<AccountInput>) => patch<Account>(`/accounts/${enc(id)}`, input),
   deleteAccount: (id: string) => del(`/accounts/${enc(id)}`),
+  disconnectAccount: (id: string) => post<Account>(`/accounts/${enc(id)}/upwork/disconnect`),
 
   // Providers
   providers: () => get<Provider[]>('/providers'),
@@ -137,10 +142,14 @@ export const api = {
   deleteMaterial: (id: string) => del(`/materials/${enc(id)}`),
 
   // Drafts
-  drafts: (q: { accountId?: string; sort?: DraftSort }) => get<Draft[]>('/drafts', q),
-  updateDraft: (id: string, draft: string) => patch<Draft>(`/drafts/${enc(id)}`, { draft }),
+  drafts: (q: { accountId?: string; sort?: DraftSort; state?: Exclude<DraftState, 'sending'> }) => get<Draft[]>('/drafts', q),
+  draft: (id: string) => get<Draft>(`/drafts/${enc(id)}`),
+  updateDraft: (id: string, edits: DraftEdits) => patch<Draft>(`/drafts/${enc(id)}`, edits),
+  generateAnswers: (id: string) => post<Draft>(`/drafts/${enc(id)}/answers/generate`),
+  submitDrafts: (items: SubmitItem[]) => post<SubmitResult>('/drafts/submit', { items }),
+  unqueueDraft: (id: string) => post<Draft>(`/drafts/${enc(id)}/unqueue`),
   rewriteDraft: (id: string, instruction: RewriteInstruction) => post<Draft>(`/drafts/${enc(id)}/rewrite`, { instruction }),
-  markApplied: (id: string, input: { connectsSpent: number | null; proposalText: string }) =>
+  markApplied: (id: string, input: { connectsSpent: number | null; proposalText: string; bidAmount?: number | null }) =>
     post<Application>(`/drafts/${enc(id)}/applied`, input),
   skipDraft: (id: string, reason: SkipReason) => post<void>(`/drafts/${enc(id)}/skip`, { reason }),
 
@@ -153,6 +162,7 @@ export const api = {
   overview: () => get<Overview>('/overview'),
 };
 
+export const upworkConnectUrl = (accountId: string) => `${API_BASE}/accounts/${enc(accountId)}/upwork/connect`;
 export const applicationsCsvUrl = API_BASE + '/applications.csv';
 
 export function errorMessage(err: unknown): string {

@@ -74,6 +74,9 @@ describe('FallbackLlm', () => {
       draft: async () => {
         throw new Error('down');
       },
+      answer: async () => {
+        throw new Error('down');
+      },
       rewrite: async () => {
         throw new Error('down');
       },

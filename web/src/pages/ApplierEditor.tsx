@@ -4,6 +4,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { api, errorMessage } from '../api/client';
 import { qk, useAccounts, useApplier, useProviders, useTelegram, useTemplates } from '../api/queries';
 import type { Account, ApplierInput, Experience, JobType, Material, Preview, Provider, ProviderId } from '../api/types';
+import { DURATIONS } from '../api/types';
 import { ChipInput } from '../components/ChipInput';
 import { Materials } from '../components/Materials';
 import { ErrorState, Loading, Meter, Segmented, Switch } from '../components/ui';
@@ -85,6 +86,7 @@ function defaults(accountId: string): ApplierInput {
     scoreThreshold: 70,
     scheduleMinutes: 30,
     telegramEnabled: false,
+    defaultDuration: 'Less than 1 month',
   };
 }
 
@@ -574,7 +576,23 @@ function EditorForm({
                   style={{ width: '100%' }}
                 />
               </div>
-              <NumField id="f-rate" label="Your hourly rate (USD)" value={nums.bidRate} onChange={(v) => setNum('bidRate', v)} hint="Only mentioned if the client asks about rates." />
+              <NumField id="f-rate" label="Your hourly rate (USD)" value={nums.bidRate} onChange={(v) => setNum('bidRate', v)} hint="Used as your bid on hourly jobs. You can change it per job." />
+            </div>
+            <div style={{ maxWidth: 360 }}>
+              <label className="lbl" htmlFor="f-duration">
+                Usual project duration
+              </label>
+              <select className="sel" id="f-duration" style={{ width: '100%', minHeight: 44 }} value={form.defaultDuration} onChange={(e) => set('defaultDuration', e.target.value)} aria-describedby="f-duration-h">
+                {(DURATIONS as readonly string[]).includes(form.defaultDuration) ? null : <option value={form.defaultDuration}>{form.defaultDuration}</option>}
+                {DURATIONS.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+              <div className="hint" id="f-duration-h">
+                Suggested on each proposal; you can change it per job.
+              </div>
             </div>
             <div>
               <label className="lbl" htmlFor="f-notes">

@@ -16,6 +16,8 @@ import {
 } from '../db/schema.js';
 import { wordCount } from '../lib/extract.js';
 import { formatBudget } from '../pipeline/format.js';
+import { usageFor } from '../services/accounts.js';
+import { readinessProblems, sendModeFor, waitReason } from '../services/sending.js';
 import { iso } from './http.js';
 
 export function applierView(a: Applier) {
@@ -43,6 +45,7 @@ export function applierView(a: Applier) {
     maxWords: a.maxWords,
     bidRate: a.bidRate,
     drafterInstructions: a.drafterInstructions,
+    defaultDuration: a.defaultDuration,
     scoreThreshold: a.scoreThreshold,
     scheduleMinutes: a.scheduleMinutes,
     telegramEnabled: a.telegramEnabled,
@@ -90,8 +93,22 @@ export function jobView(j: Job) {
     clientTotalSpend: j.clientTotalSpend,
     proposalsCount: j.proposalsCount,
     postedAt: iso(j.postedAt),
+    questions: j.questions,
+    connectsRequired: j.connectsRequired,
   };
 }
+
+const DRAFT_STATE = {
+  pending_review: 'ready',
+  queued: 'queued',
+  sending: 'sending',
+  submit_failed: 'failed',
+  applied: 'sent',
+  skipped: 'skipped',
+  bad_match: 'skipped',
+  filtered: 'skipped',
+  below_threshold: 'skipped',
+} as const;
 
 export async function applierSummaries(rows: Applier[]) {
   if (rows.length === 0) return [];
@@ -142,19 +159,33 @@ export async function draftViews(matches: JobMatch[]) {
   const applierRows = await db.select().from(appliers).where(inArray(appliers.id, applierIds));
   const accountRows = await db.select().from(upworkAccounts);
   const mats = await db.select().from(materials).where(inArray(materials.applierId, applierIds));
+  const usage = await usageFor(accountRows.map((a) => a.id));
 
   return matches.flatMap((m) => {
     const job = jobRows.find((j) => j.id === m.jobId);
     const applier = applierRows.find((a) => a.id === m.applierId);
     if (!job || !applier) return [];
     const account = accountRows.find((a) => a.id === applier.upworkAccountId);
+    const answered = new Map(m.answers.map((a) => [a.question, a.answer]));
+    const state = DRAFT_STATE[m.status];
     return [
       {
         id: m.id,
+        state,
         score: m.score ?? 0,
         reasons: m.reasons ?? '',
         redFlags: m.redFlags ?? '',
         draft: m.draft ?? '',
+        bidAmount: m.bidAmount,
+        duration: m.duration,
+        answers: job.questions.map((question) => ({ question, answer: answered.get(question) ?? '' })),
+        problems: readinessProblems(m, job),
+        sendMode: account ? sendModeFor(account) : ('simulated' as const),
+        queuedAt: iso(m.queuedAt),
+        approvedVia: m.approvedVia,
+        waitReason:
+          state === 'queued' && account ? waitReason(account, usage.get(account.id)!, job.connectsRequired) : null,
+        submitError: m.submitError,
         createdAt: m.createdAt.toISOString(),
         applier: { id: applier.id, name: applier.name, maxWords: applier.maxWords },
         account: account ? accountRef(account) : { id: applier.upworkAccountId, name: 'Unknown account' },
@@ -187,6 +218,8 @@ export async function applicationViews(rows: Application[]) {
       id: r.id,
       status: r.status,
       connectsSpent: r.connectsSpent,
+      bidAmount: r.bidAmount,
+      submittedVia: r.submittedVia,
       notes: r.notes,
       proposalText: r.proposalText,
       appliedAt: r.appliedAt.toISOString(),

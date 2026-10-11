@@ -25,8 +25,13 @@ export const useAppliers = () => useQuery({ queryKey: qk.appliers, queryFn: api.
 export const useTemplates = () => useQuery({ queryKey: qk.templates, queryFn: api.templates, staleTime: 5 * 60_000 });
 export const useApplier = (id: string | undefined) =>
   useQuery({ queryKey: qk.applier(id ?? ''), queryFn: () => api.applier(id as string), enabled: Boolean(id) });
+/** All open drafts (ready, queued, sending, failed). Polls every 10s while any are queued or sending. */
 export const useDrafts = (accountId: string, sort: DraftSort) =>
-  useQuery({ queryKey: qk.drafts(accountId, sort), queryFn: () => api.drafts({ accountId: accountId || undefined, sort }) });
+  useQuery({
+    queryKey: qk.drafts(accountId, sort),
+    queryFn: () => api.drafts({ accountId: accountId || undefined, sort }),
+    refetchInterval: (query) => (query.state.data?.some((d) => d.state === 'queued' || d.state === 'sending') ? 10_000 : false),
+  });
 export const useApplications = (status: AppStatus | '', accountId: string, applierId: string) =>
   useQuery({
     queryKey: qk.applications(status, accountId, applierId),

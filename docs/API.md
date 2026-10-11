@@ -17,16 +17,31 @@ type ApplierRef = { id: string; name: string };
 ```ts
 type Account = {
   id: string; name: string; email: string;
-  status: 'connected' | 'sample' | 'error'; // 'sample' = no access token yet, sample jobs are used
-  hasClientId: boolean; hasAccessToken: boolean;
+  status: 'connected' | 'sample' | 'error'; // 'sample' = not signed in to Upwork; sample jobs and test sends
+  hasClientId: boolean; hasClientSecret: boolean; hasAccessToken: boolean;
+  canConnect: boolean;            // has client id + secret, so "Connect with Upwork" can start
+  connectedAt: string | null; upworkUserName: string | null;
   lastSearchAt: string | null; lastError: string | null;
   applierCount: number;
+  limits: { dailyProposalCap: number; minGapSeconds: number; weeklyConnectsBudget: number | null };
+  usage: { sentToday: number; connectsThisWeek: number; nextSendAt: string | null };
 };
 type AccountInput = {
   name: string; email?: string;
   clientId?: string; clientSecret?: string; accessToken?: string; refreshToken?: string;
+  dailyProposalCap?: number;          // 1–50, default 10
+  minGapSeconds?: number;             // ≥ 60, default 180
+  weeklyConnectsBudget?: number | null;
 };
 ```
+
+Signing in to Upwork (OAuth). The client id and secret come from the user's Upwork API key.
+
+- `GET /accounts/:id/upwork/connect` → 302 to Upwork's approval page. **Open as a normal link (full page navigation), not with fetch.**
+- `GET /upwork/callback` → Upwork redirects here; the server then redirects the browser to
+  `/settings?connected=<accountId>` on success or `/settings?upworkError=<message>` on failure.
+  Settings should show a success or error notice from these query params, then clear them.
+- `POST /accounts/:id/upwork/disconnect` → `Account` (back to sample jobs)
 
 - `GET /accounts` → `Account[]`
 - `POST /accounts` (`AccountInput`) → `Account`
@@ -58,6 +73,7 @@ type Provider = {
 - `GET /settings/telegram` → `{ configured: boolean; tokenHint: string | null; chatId: string | null }`
 - `PUT /settings/telegram` (`{ botToken?: string; chatId?: string }`) → same as GET
 - `POST /settings/telegram/find-chat` → `{ chatId: string | null; message: string }`
+  (uses the chat that last messaged the bot; the server listens for messages and Submit/Skip taps whenever a bot token is saved)
 - `POST /settings/telegram/test` → `{ ok: boolean; message: string }`
 
 ## Appliers
@@ -71,6 +87,7 @@ type ApplierInput = {
   maxProposals: number | null; excludedCountries: string[];
   profileSummary: string; tone: string; maxWords: number; bidRate: number | null; drafterInstructions: string;
   scoreThreshold: number; scheduleMinutes: number; telegramEnabled: boolean;
+  defaultDuration: string; // suggested project duration on each proposal, e.g. 'Less than 1 month'
 };
 type Material = {
   id: string; kind: 'resume' | 'video' | 'portfolio'; title: string; description: string;
@@ -114,7 +131,15 @@ type Preview = {
 - `DELETE /materials/:id` → `204`
 - `GET /materials/:id/file` → the file
 
-## Drafts (jobs waiting for review)
+## Drafts and sending proposals
+
+Every proposal is sent only after the user approves that specific draft, in the app (`POST /drafts/submit`)
+or with the Submit button on its Telegram alert. Approved drafts wait in a queue and are sent one at a time per
+Upwork account, with a gap between sends, a daily cap and an optional weekly Connects budget (account `limits`).
+Accounts not signed in to Upwork do a **test send**: the whole flow runs but nothing goes to Upwork
+(`sendMode: 'simulated'`, application `submittedVia: 'simulated'`).
+
+Duration options (strings): 'Less than 1 month', '1 to 3 months', '3 to 6 months', 'More than 6 months'.
 
 ```ts
 type JobView = {
@@ -122,18 +147,39 @@ type JobView = {
   jobType: 'fixed' | 'hourly'; budgetMin: number | null; budgetMax: number | null; budgetLabel: string;
   experienceLevel: string | null; clientCountry: string | null; clientPaymentVerified: boolean | null;
   clientHireRate: number | null; clientTotalSpend: number | null; proposalsCount: number | null; postedAt: string | null;
+  questions: string[];             // the client's screening questions
+  connectsRequired: number | null;
 };
+type DraftState = 'ready' | 'queued' | 'sending' | 'failed'
+  | 'sent' | 'skipped'; // only seen from GET /drafts/:id, e.g. opening an old Telegram link
 type Draft = {
-  id: string; score: number; reasons: string; redFlags: string; draft: string; createdAt: string;
+  id: string; state: DraftState;
+  score: number; reasons: string; redFlags: string; draft: string; createdAt: string;
+  bidAmount: number | null;        // USD: hourly rate for hourly jobs, total for fixed-price jobs
+  duration: string | null;
+  answers: { question: string; answer: string }[]; // one per job.questions, in order ('' = not answered)
+  problems: string[];              // what stops it being sent, in plain words; [] = ready to approve
+  sendMode: 'api' | 'simulated';
+  queuedAt: string | null; approvedVia: 'app' | 'telegram' | null;
+  waitReason: string | null;       // queued only: why it hasn't gone yet (daily limit, gap, budget)
+  submitError: string | null;      // failed only
   applier: ApplierRef & { maxWords: number }; account: AccountRef; job: JobView;
   attachments: { id: string; kind: 'resume' | 'video' | 'portfolio'; title: string; fileName: string | null; url: string | null; downloadUrl: string | null }[];
 };
 ```
 
-- `GET /drafts?accountId=&sort=score|newest` → `Draft[]`
-- `PATCH /drafts/:id` (`{ draft: string }`) → `Draft`
+- `GET /drafts?accountId=&sort=score|newest&state=ready|queued|failed` → `Draft[]` (no `state` = all open drafts)
+- `GET /drafts/:id` → `Draft`
+- `PATCH /drafts/:id` (`{ draft?, bidAmount?, duration?, answers? }`) → `Draft` (ready or failed drafts only; 409 while queued)
 - `POST /drafts/:id/rewrite` (`{ instruction: 'new' | 'shorter' | 'warmer' | 'specific' }`) → `Draft`
-- `POST /drafts/:id/applied` (`{ connectsSpent: number | null; proposalText: string }`) → `Application`
+- `POST /drafts/:id/answers/generate` → `Draft` (AI writes the screening answers; 400 without an AI provider)
+- `POST /drafts/submit` (`{ items: ({ id } & { draft?, bidAmount?, duration?, answers? })[] }`, 1–50 items)
+  → `{ results: { id: string; ok: boolean; error?: string }[]; drafts: Draft[]; queued: number }`.
+  Approves each item (saving its edits first). An item that isn't complete returns `ok: false` with the reason;
+  the others still go through. Also used to retry a failed draft.
+- `POST /drafts/:id/unqueue` → `Draft` (back to ready; 409 once it's sending)
+- `POST /drafts/:id/applied` (`{ connectsSpent: number | null; proposalText: string; bidAmount?: number | null }`) → `Application`
+  (the user sent it themselves on the Upwork website)
 - `POST /drafts/:id/skip` (`{ reason: 'skip' | 'bad_match' }`) → `204`
 
 ## Applied jobs
@@ -141,6 +187,8 @@ type Draft = {
 ```ts
 type Application = {
   id: string; status: AppStatus; connectsSpent: number | null; notes: string; proposalText: string;
+  bidAmount: number | null;
+  submittedVia: 'manual' | 'api' | 'simulated'; // 'manual' = sent on the website; 'simulated' = test send
   appliedAt: string; updatedAt: string;
   job: { id: string; title: string; url: string; budgetLabel: string };
   applier: ApplierRef; account: AccountRef;
@@ -156,9 +204,11 @@ type Application = {
 
 ```ts
 type Overview = {
-  pendingDrafts: number; jobsCheckedLast24h: number;
+  pendingDrafts: number;           // ready to review
+  queue: { queued: number; failed: number };
+  jobsCheckedLast24h: number;
   topDrafts: { id: string; score: number; title: string; budgetLabel: string; postedAt: string | null; applier: ApplierRef; account: AccountRef }[];
-  week: { sent: number; connects: number; byStatus: Record<AppStatus, number> };
+  week: { sent: number; sentByApp: number /* real sends through the app, not test sends */; connects: number; byStatus: Record<AppStatus, number> };
   appliers: { id: string; name: string; active: boolean; lastRunAt: string | null; pendingDrafts: number; account: AccountRef }[];
   accounts: { id: string; name: string; status: 'connected' | 'sample' | 'error' }[];
   setup: { hasAccount: boolean; hasProvider: boolean; hasApplier: boolean; hasTelegram: boolean };

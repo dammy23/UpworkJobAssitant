@@ -2,10 +2,9 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { appliers, jobMatches, jobs, materials, upworkAccounts, type Applier, type Job } from '../db/schema.js';
 import { jobSourceFor } from '../services/accounts.js';
+import { notifyNewDraft, proposalDefaults } from '../services/sending.js';
 import { applyFilters, searchTermsFor } from './filters.js';
-import { formatBudget } from './format.js';
 import { llmFor } from './llm.js';
-import { sendDraftAlert } from './notify.js';
 import { PROMPT_VERSION, type ApplierContext, type PromptJob } from './prompts.js';
 import type { NormalizedJob } from './types.js';
 
@@ -45,6 +44,8 @@ async function upsertJob(job: NormalizedJob): Promise<Job> {
     clientTotalSpend: job.clientTotalSpend,
     proposalsCount: job.proposalsCount,
     postedAt: job.postedAt,
+    questions: job.questions,
+    connectsRequired: job.connectsRequired,
     raw: job.raw,
   };
   const [row] = await db
@@ -156,6 +157,15 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
         }
 
         const draft = await llm.draft(ctx, nj);
+        let answers: { question: string; answer: string }[] = [];
+        if (nj.questions.length) {
+          const texts = await llm.answer(ctx, nj, nj.questions, draft.text).catch((err: Error) => {
+            summary.errors.push(`${nj.title}: couldn't draft screening answers (${err.message})`);
+            return nj.questions.map(() => '');
+          });
+          answers = nj.questions.map((question, i) => ({ question, answer: texts[i] ?? '' }));
+        }
+        const defaults = proposalDefaults(applier, job);
         const [match] = await db
           .insert(jobMatches)
           .values({
@@ -166,25 +176,16 @@ export async function runApplier(applierId: string): Promise<RunSummary> {
             reasons: scored.reasons,
             redFlags: scored.redFlags,
             draft: draft.text,
+            bidAmount: defaults.bidAmount,
+            duration: defaults.duration,
+            answers,
             model: scored.model === draft.model ? scored.model : `${scored.model} / ${draft.model}`,
             promptVersion: PROMPT_VERSION,
           })
           .returning();
         summary.drafted++;
 
-        if (applier.telegramEnabled) {
-          const sent = await sendDraftAlert({
-            accountName: account.name,
-            applierName: applier.name,
-            jobTitle: job.title,
-            jobUrl: job.url,
-            budget: formatBudget(job),
-            score: scored.score,
-            reasons: scored.reasons,
-            draft: draft.text,
-          });
-          if (sent) await db.update(jobMatches).set({ notifiedAt: new Date() }).where(eq(jobMatches.id, match.id));
-        }
+        if (applier.telegramEnabled) await notifyNewDraft(match.id);
       } catch (err) {
         summary.errors.push(`${nj.title}: ${(err as Error).message}`);
       }

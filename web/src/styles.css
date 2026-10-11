@@ -199,9 +199,37 @@ input[type='checkbox'] { accent-color: var(--pine); }
 .rv-wrap { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
 .rv-list { flex: 1 1 280px; max-width: 360px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .rv-detail { flex: 3 1 600px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
-.item { display: flex; gap: 12px; width: 100%; text-align: left; padding: 14px 16px; border: 1px solid transparent; border-radius: 12px; background: transparent; cursor: pointer; font-family: var(--font-body); color: var(--pine); }
+.item { display: flex; gap: 4px; width: 100%; border: 1px solid transparent; border-radius: 12px; background: transparent; color: var(--pine); }
 .item:hover { background: #e4ebe9; }
 .item.on { background: #fff; border-color: var(--pine); }
+.item.ticked { background: #fcf6e3; }
+.item.ticked.on { background: #fff; }
+.item-main { flex: 1; min-width: 0; display: flex; gap: 12px; text-align: left; padding: 14px 16px; border: 0; border-radius: 12px; background: transparent; cursor: pointer; font-family: var(--font-body); color: var(--pine); }
+.item-check { flex: none; align-self: flex-start; display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; margin: 6px -12px 0 2px; cursor: pointer; border-radius: 10px; }
+.item-check input { width: 20px; height: 20px; margin: 0; cursor: pointer; }
+.item-check:focus-within { outline: 3px solid var(--marigold); outline-offset: -2px; }
+.item-check input:focus-visible { outline: none; }
+.batchbar { position: sticky; bottom: 16px; z-index: 30; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 10px 10px 16px; border-radius: 14px; background: var(--pine); color: #fff; box-shadow: 0 6px 20px rgba(10, 31, 27, .25); }
+.batchbar > span { flex: 1; white-space: nowrap; }
+.batchbar .btn-q { color: var(--side-text-2); }
+.batchbar .btn-q:hover { background: var(--pine-hover); color: #fff; }
+.batchlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: 12px; }
+.batchlist li { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); font-size: 14.5px; line-height: 1.4; }
+.batchlist li:last-child { border-bottom: 0; }
+.sumlist { margin: 0; display: flex; flex-direction: column; }
+.sumlist > div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 14.5px; }
+.sumlist > div:last-child { border-bottom: 0; }
+.sumlist dt { color: var(--muted); }
+.sumlist dd { margin: 0; font-weight: 600; text-align: right; }
+.affix { display: flex; align-items: stretch; border: 1px solid var(--field-line); border-radius: 10px; background: #fff; }
+.affix:focus-within { outline: 3px solid var(--marigold); outline-offset: 2px; }
+.affix .in { border: 0; border-radius: 0; min-width: 0; flex: 1; padding-left: 4px; }
+.affix .in:focus { outline: none; }
+.affix-pre, .affix-post { display: flex; align-items: center; padding: 0 12px; color: var(--muted-2); font-weight: 600; font-size: 15px; }
+.affix-pre { padding-right: 2px; }
+.affix-post { border-left: 1px solid var(--line-soft); background: var(--surface-2); border-radius: 0 10px 10px 0; font-size: 14px; }
+.affix:has(.in[aria-invalid='true']) { border-color: #c4553c; }
+.note-warn { background: #fcf0cf; border-color: #efd58a; color: #4d3800; }
 .item .fitn { font-size: 20px; min-width: 0; }
 .rw { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--field-line); background: #fff; font: 500 13px/1 var(--font-body); color: var(--pine); cursor: pointer; }
 .rw:hover { background: var(--surface-hover); }
@@ -294,6 +322,7 @@ input[type='checkbox'] { accent-color: var(--pine); }
 .num { width: 28px; height: 28px; border-radius: 50%; background: var(--pine); color: #fff; display: flex; align-items: center; justify-content: center; font: 700 13px/1 var(--font-body); flex: none; }
 .num.first { background: var(--marigold); color: var(--pine); }
 .set-nav { flex: 0 1 200px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 16px; }
+.acc-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 12px; padding-left: 56px; font-size: 14px; line-height: 1.5; color: var(--ink-2); }
 .prov-body { padding: 0 22px 22px 78px; display: flex; flex-direction: column; gap: 16px; }
 
 /* ---------- Setup ---------- */
@@ -312,6 +341,9 @@ input[type='checkbox'] { accent-color: var(--pine); }
 .tile b { font-size: 15px; }
 .tile span { font-size: 13px; line-height: 1.4; color: var(--muted); }
 .tile:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Filter chip counts share the .n name with the setup step numbers; keep them plain. */
+.fp .n { width: auto; height: auto; display: inline; border: 0; border-radius: 0; background: none; color: inherit; font: 500 13.5px/1 var(--font-body); }
 
 /* ---------- Phone layout ---------- */
 @media (max-width: 760px) {
@@ -340,6 +372,8 @@ input[type='checkbox'] { accent-color: var(--pine); }
   .rv-actions.bottom .btn { min-height: 48px; border-radius: 12px; font-size: 15px; }
   .rv-actions.bottom .btn-p { grid-column: 1 / -1; }
   .rv-actions.bottom .btn-bad { display: none; }
+  .batchbar { position: fixed; left: 12px; right: 12px; bottom: calc(68px + env(safe-area-inset-bottom, 0px)); margin: 0; }
+  .rv-list:has(.batchbar) { padding-bottom: 72px; }
   .confirm.bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 45; border-radius: 16px 16px 0 0; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
   .review-hides-tabbar .tabbar { display: none; }
 
@@ -350,6 +384,7 @@ input[type='checkbox'] { accent-color: var(--pine); }
 
   .set-nav { position: static; flex-basis: 100%; flex-direction: row; flex-wrap: wrap; }
   .prov-body { padding: 0 16px 18px; }
+  .acc-sub { padding-left: 0; }
   .stepbody { padding: 0 16px 18px; }
   .ed-side { position: static; }
   .sec { padding: 20px 16px; }

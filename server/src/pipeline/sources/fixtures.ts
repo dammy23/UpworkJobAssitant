@@ -12,6 +12,8 @@ type Fixture = Omit<NormalizedJob, 'upworkId' | 'url' | 'postedAt' | 'raw'> & {
 const FIXTURES: Fixture[] = [
   {
     id: 'fx-001',
+    questions: ["Which calendar and email tools have you used most?", "When would you be available to start?"],
+    connectsRequired: 12,
     title: 'Executive assistant for a busy founder (10 hrs/week)',
     description:
       'Looking for an organised executive assistant to manage my calendar, triage my inbox and book travel. You will work in Google Workspace and send a short end-of-day summary. Long-term role, UK hours preferred.',
@@ -30,6 +32,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-002',
+    questions: [],
+    connectsRequired: 8,
     title: 'Data entry and CRM clean-up (HubSpot)',
     description:
       'We need someone careful to de-duplicate around 4,000 contacts in HubSpot, fix company associations and fill missing fields from LinkedIn. Accuracy matters more than speed.',
@@ -48,6 +52,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-003',
+    questions: ["Please share links to two published samples.", "How do you research UK personal finance topics?"],
+    connectsRequired: 10,
     title: 'Weekly SEO blog posts for a fintech startup',
     description:
       'Four 1,200-word blog posts a month on personal finance topics. You will get a keyword brief for each post. Must write naturally for UK readers. Please share two published samples.',
@@ -66,6 +72,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-004',
+    questions: [],
+    connectsRequired: 6,
     title: 'Copywriter for product launch emails',
     description:
       'Write a five-email launch sequence for our new skincare line. Brand voice is warm and confident. Commission only for the first month, then paid.',
@@ -84,6 +92,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-005',
+    questions: ["Which version of Xero have you worked with, and for how long?"],
+    connectsRequired: 12,
     title: 'Bookkeeper for a small e-commerce shop (Xero)',
     description:
       'Monthly bookkeeping in Xero: reconcile bank feeds, categorise Shopify payouts, and prepare VAT returns for review. About 6 hours a month, ongoing.',
@@ -102,6 +112,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-006',
+    questions: [],
+    connectsRequired: 8,
     title: 'Customer support agent for live chat (evenings)',
     description:
       'Answer customer questions on Intercom live chat, 6pm–10pm UK time, five evenings a week. Experience with Shopify order issues is a plus.',
@@ -120,6 +132,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-007',
+    questions: [],
+    connectsRequired: 10,
     title: 'Graphic designer for social media templates (Canva)',
     description:
       'Create 20 editable Canva templates for Instagram posts and stories in our brand colours. Must deliver source files.',
@@ -138,6 +152,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-008',
+    questions: [],
+    connectsRequired: 14,
     title: 'French to English translation of a 30-page user manual',
     description:
       'Translate a technical user manual for kitchen appliances from French into UK English. Native English speaker required. Deadline in 10 days.',
@@ -156,6 +172,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-009',
+    questions: ["Describe a queue migration you have done in Laravel."],
+    connectsRequired: 16,
     title: 'Move a Laravel monolith to queued background jobs',
     description:
       'Our Laravel 11 app does heavy work in the request cycle (emails, PDF generation, third-party API calls). We want it moved onto Redis-backed queues with Horizon, with safe retries.',
@@ -174,6 +192,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-010',
+    questions: [],
+    connectsRequired: 14,
     title: 'Build a REST API for a logistics booking app',
     description:
       'Laravel REST API with token auth, booking rules, and tests. A mobile team will consume it. Booking rules are partly documented.',
@@ -192,6 +212,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-011',
+    questions: [],
+    connectsRequired: 8,
     title: 'WordPress site speed fixes',
     description: 'Our WordPress site loads slowly. Need caching, image optimisation and plugin clean-up.',
     category: 'Web, Mobile & Software Dev',
@@ -209,6 +231,8 @@ const FIXTURES: Fixture[] = [
   },
   {
     id: 'fx-012',
+    questions: [],
+    connectsRequired: 8,
     title: 'Social media manager for a local bakery',
     description:
       'Plan and post content on Instagram and Facebook three times a week, reply to comments, and send a monthly report. Photos are provided.',

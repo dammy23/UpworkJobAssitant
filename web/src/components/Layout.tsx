@@ -44,7 +44,7 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="sidefoot">You review every draft and submit it yourself on Upwork. Nothing is sent for you.</div>
+        <div className="sidefoot">Nothing is sent until you approve that proposal. It then goes from the Upwork account named on it.</div>
       </aside>
 
       <main className="main" id="main">

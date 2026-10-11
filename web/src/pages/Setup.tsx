@@ -62,7 +62,7 @@ function AccountStep({ onDone }: { onDone: () => void }) {
   return (
     <>
       <div className="note">
-        <strong>Request an API key from Upwork.</strong> On upwork.com/developer, choose personal use and describe it as a read-only job search tool. Approval can take a few days. Until then,
+        <strong>Request an API key from Upwork.</strong> On upwork.com/developer, choose personal use, set the Callback URL to http://localhost:4000/api/upwork/callback, and tick Common Entities (read-only), Read marketplace Job Postings and Submit Proposal. Describe it honestly: it finds jobs and drafts proposals, and only sends one when you approve it. Approval can take a few days. Until then,
         the app shows sample jobs so you can try everything.
       </div>
       {withKey ? (

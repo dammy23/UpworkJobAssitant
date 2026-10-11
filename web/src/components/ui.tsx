@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { errorMessage } from '../api/client';
 
 /* ---------- Icons (from the designs) ---------- */
@@ -215,4 +215,60 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
 
 export function SrOnly({ children }: { children: ReactNode }) {
   return <span className="sr-only">{children}</span>;
+}
+
+/* ---------- Modal dialog ---------- */
+/** A modal dialog: focus moves into it on open, Tab stays inside, Escape and the backdrop close it, focus returns on close. */
+export function Dialog({ title, onClose, children, busy = false }: { title: string; onClose: () => void; children: ReactNode; busy?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busyRef.current) {
+        e.preventDefault();
+        closeRef.current();
+      }
+      if (e.key === 'Tab' && ref.current) {
+        const items = Array.from(ref.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select, textarea, [tabindex="0"]'));
+        if (items.length === 0) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      before?.focus?.();
+    };
+  }, []);
+
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busyRef.current) onClose();
+      }}
+    >
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={ref}>
+        <h2 className="h2" id={titleId}>
+          {title}
+        </h2>
+        {children}
+      </div>
+    </div>
+  );
 }

@@ -1,20 +1,14 @@
+import { config } from '../../config.js';
 import type { JobSearch, JobSource, NormalizedJob } from '../types.js';
 
 /**
- * Read-only job search through Upwork's official GraphQL API.
+ * Upwork's official GraphQL API: sign-in, job search and proposal submission.
+ * Everything Upwork-specific lives in this file.
  *
- * This only SEARCHES jobs. It never submits proposals or sends messages: that
- * stays a manual step on Upwork, as Upwork's terms require.
- *
- * The query below follows Upwork's marketplace job search. Field names can change,
- * so check it in the API explorer once your key is approved
- * (https://www.upwork.com/developer/documentation/graphql/api/docs/index.html)
- * and adjust JOB_SEARCH_QUERY and mapNode() if needed. Everything Upwork-specific
- * lives in this file.
+ * Field names below follow Upwork's documentation. Once your API key is approved, run
+ * `npm run upwork:schema` to print the live input/response types and adjust
+ * JOB_SEARCH_QUERY, mapNode(), SUBMIT_PROPOSAL_MUTATION and buildProposalInput() if needed.
  */
-
-const GRAPHQL_URL = 'https://api.upwork.com/graphql';
-const TOKEN_URL = 'https://www.upwork.com/api/v3/oauth2/token';
 
 export const JOB_SEARCH_QUERY = /* GraphQL */ `
   query JobSearch($filter: MarketplaceJobPostingsSearchFilter, $sort: [MarketplaceJobPostingSearchSortAttribute]) {
@@ -50,11 +44,56 @@ export const JOB_SEARCH_QUERY = /* GraphQL */ `
   }
 `;
 
+export const COMPANY_SELECTOR_QUERY = /* GraphQL */ `
+  query { companySelector { items { title organizationId } } }
+`;
+
+export const SUBMIT_PROPOSAL_MUTATION = /* GraphQL */ `
+  mutation CreateJobProposal($input: CreateJobProposalInput!) {
+    createJobProposal(input: $input) {
+      __typename
+    }
+  }
+`;
+
+export interface ProposalToSend {
+  jobUpworkId: string;
+  jobCiphertext: string | null;
+  jobType: 'fixed' | 'hourly';
+  coverLetter: string;
+  bidAmount: number; // USD: hourly rate, or fixed total
+  duration: string | null;
+  answers: { question: string; answer: string }[];
+}
+
+export interface SubmitResult {
+  proposalId: string | null;
+  connectsSpent: number | null;
+  raw: unknown;
+}
+
+/**
+ * Maps a proposal to CreateJobProposalInput. This is a best reading of Upwork's docs and must be
+ * checked against the live schema (`npm run upwork:schema`) before the first real send.
+ */
+export function buildProposalInput(p: ProposalToSend): Record<string, unknown> {
+  return {
+    jobPostingId: p.jobUpworkId,
+    coverLetter: p.coverLetter,
+    ...(p.jobType === 'hourly'
+      ? { chargeRate: { rawValue: String(p.bidAmount), currency: 'USD' } }
+      : { amount: { rawValue: String(p.bidAmount), currency: 'USD' } }),
+    ...(p.duration ? { estimatedDuration: p.duration } : {}),
+    ...(p.answers.length ? { questionAnswers: p.answers.map((a) => ({ question: a.question, answer: a.answer })) } : {}),
+  };
+}
+
 export interface UpworkCredentials {
   clientId?: string;
   clientSecret?: string;
   accessToken?: string;
   refreshToken?: string;
+  tenantId?: string;
 }
 
 type Money = { rawValue?: string | number | null } | null | undefined;
@@ -83,6 +122,9 @@ export function mapNode(node: any): NormalizedJob {
   const posted = Number(node.client?.totalPostedJobs ?? NaN);
   const hireRate = Number.isFinite(hires) && Number.isFinite(posted) && posted > 0 ? Math.round((hires / posted) * 100) : null;
   const verification = String(node.client?.verificationStatus ?? '');
+  const questions = Array.isArray(node.questions)
+    ? node.questions.map((q: { question?: string } | string) => (typeof q === 'string' ? q : (q.question ?? ''))).filter(Boolean)
+    : [];
 
   return {
     upworkId: String(node.id),
@@ -101,17 +143,62 @@ export function mapNode(node: any): NormalizedJob {
     clientTotalSpend: num(node.client?.totalSpent),
     proposalsCount: node.totalApplicants != null ? Number(node.totalApplicants) : null,
     postedAt: node.createdDateTime ? new Date(node.createdDateTime) : null,
+    questions,
+    connectsRequired: node.connectPrice != null ? Number(node.connectPrice) : null,
     raw: node,
   };
 }
 
-export class UpworkJobSource implements JobSource {
+// ---- Sign-in (OAuth 2.0 authorization code) ----
+
+export function authorizeUrl(clientId: string, state: string): string {
+  const u = new URL(config.UPWORK_AUTHORIZE_URL);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('client_id', clientId);
+  u.searchParams.set('redirect_uri', config.UPWORK_REDIRECT_URI);
+  u.searchParams.set('state', state);
+  return u.toString();
+}
+
+export interface Tokens {
+  accessToken: string;
+  refreshToken?: string;
+}
+
+async function tokenRequest(params: Record<string, string>): Promise<Tokens> {
+  const res = await fetch(config.UPWORK_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams(params),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Upwork sign-in failed (${res.status}): ${text.slice(0, 200)}`);
+  const body = JSON.parse(text) as { access_token?: string; refresh_token?: string };
+  if (!body.access_token) throw new Error('Upwork did not return an access token');
+  return { accessToken: body.access_token, refreshToken: body.refresh_token };
+}
+
+export function exchangeCode(code: string, clientId: string, clientSecret: string): Promise<Tokens> {
+  return tokenRequest({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: config.UPWORK_REDIRECT_URI,
+    client_id: clientId,
+    client_secret: clientSecret,
+  });
+}
+
+/** A GraphQL error Upwork returned (as opposed to a network failure). Not worth retrying unchanged. */
+export class UpworkRejected extends Error {}
+
+export class UpworkClient implements JobSource {
   readonly name = 'upwork';
   private accessToken: string | undefined;
 
   constructor(
     private readonly creds: UpworkCredentials,
-    private readonly onTokenRefresh?: (tokens: { accessToken: string; refreshToken?: string }) => void | Promise<void>,
+    private readonly onTokenRefresh?: (tokens: Tokens) => void | Promise<void>,
   ) {
     this.accessToken = creds.accessToken;
   }
@@ -130,53 +217,68 @@ export class UpworkJobSource implements JobSource {
     return edges.map((e: any) => mapNode(e.node));
   }
 
+  /** The organisations this login can act for; the first is used as the tenant. */
+  async companies(): Promise<{ title: string; organizationId: string }[]> {
+    const data = await this.graphql(COMPANY_SELECTOR_QUERY, {});
+    return data?.companySelector?.items ?? [];
+  }
+
+  async submitProposal(p: ProposalToSend): Promise<SubmitResult> {
+    const data = await this.graphql(SUBMIT_PROPOSAL_MUTATION, { input: buildProposalInput(p) });
+    const r = data?.createJobProposal ?? {};
+    return {
+      proposalId: r.id ?? r.proposalId ?? r.proposal?.id ?? null,
+      connectsSpent: r.connectsCharged ?? r.connects ?? null,
+      raw: r,
+    };
+  }
+
+  /** Prints a type's fields from the live schema (used by `npm run upwork:schema`). */
+  async describeType(name: string): Promise<unknown> {
+    const data = await this.graphql(
+      `query T($n: String!) { __type(name: $n) { name kind inputFields { name type { name kind ofType { name kind ofType { name kind } } } } fields { name type { name kind ofType { name kind } } } } }`,
+      { n: name },
+    );
+    return data?.__type ?? null;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async graphql(query: string, variables: Record<string, unknown>, retried = false): Promise<any> {
-    if (!this.accessToken) {
-      throw new Error('Upwork access token missing. Set UPWORK_ACCESS_TOKEN (and UPWORK_REFRESH_TOKEN) in .env.');
-    }
-    const res = await fetch(GRAPHQL_URL, {
+  async graphql(query: string, variables: Record<string, unknown>, retried = false): Promise<any> {
+    if (!this.accessToken) throw new Error('This account is not signed in to Upwork yet.');
+    const res = await fetch(config.UPWORK_GRAPHQL_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.accessToken}`,
+        ...(this.creds.tenantId ? { 'X-Upwork-API-TenantId': this.creds.tenantId } : {}),
       },
       body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (res.status === 401 && !retried && this.creds.refreshToken) {
       await this.refresh();
       return this.graphql(query, variables, true);
     }
-    if (!res.ok) {
-      throw new Error(`Upwork API ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    }
+    if (!res.ok) throw new Error(`Upwork API ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const body = (await res.json()) as { data?: unknown; errors?: { message: string }[] };
-    if (body.errors?.length) {
-      throw new Error(`Upwork API error: ${body.errors.map((e) => e.message).join('; ')}`);
-    }
+    if (body.errors?.length) throw new UpworkRejected(`Upwork said: ${body.errors.map((e) => e.message).join('; ')}`);
     return body.data;
   }
 
   private async refresh(): Promise<void> {
     const { clientId, clientSecret, refreshToken } = this.creds;
     if (!clientId || !clientSecret || !refreshToken) {
-      throw new Error('Cannot refresh Upwork token: client id, secret and refresh token are required.');
+      throw new Error('The Upwork sign-in has expired. Connect the account again in Settings.');
     }
-    const res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-      }),
+    const tokens = await tokenRequest({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
     });
-    if (!res.ok) throw new Error(`Upwork token refresh failed: ${res.status}`);
-    const tokens = (await res.json()) as { access_token: string; refresh_token?: string };
-    this.accessToken = tokens.access_token;
-    if (tokens.refresh_token) this.creds.refreshToken = tokens.refresh_token;
-    await this.onTokenRefresh?.({ accessToken: tokens.access_token, refreshToken: tokens.refresh_token });
+    this.accessToken = tokens.accessToken;
+    if (tokens.refreshToken) this.creds.refreshToken = tokens.refreshToken;
+    await this.onTokenRefresh?.(tokens);
   }
 }

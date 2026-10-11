@@ -32,8 +32,8 @@ function AccountBanners({ accounts }: { accounts: Overview['accounts'] }) {
           <div style={{ flex: '1 1 320px' }}>
             {a.status === 'sample' ? (
               <>
-                <strong>{a.name}'s Upwork account is using sample jobs.</strong> The API key is still waiting for Upwork's
-                approval, so its appliers can't see real jobs yet.
+                <strong>{a.name}'s Upwork account isn't signed in yet.</strong> Its appliers use sample jobs, and sending is a test
+                send that doesn't reach Upwork until you connect it in Settings.
               </>
             ) : (
               <>
@@ -47,6 +47,31 @@ function AccountBanners({ accounts }: { accounts: Overview['accounts'] }) {
           </Link>
         </div>
       ))}
+    </>
+  );
+}
+
+function QueueBanners({ queue }: { queue: Overview['queue'] }) {
+  return (
+    <>
+      {queue.failed > 0 && (
+        <div className="banner banner-err" role="alert">
+          <Icon.Warn />
+          <div style={{ flex: '1 1 320px' }}>
+            <strong>{queue.failed === 1 ? 'One proposal wasn’t sent.' : `${countWord(queue.failed)} proposals weren’t sent.`}</strong> See what went wrong, fix it and try again.
+          </div>
+          <Link className="btn btn-s" to="/review?tab=failed">
+            See what wasn't sent
+          </Link>
+        </div>
+      )}
+      {queue.queued > 0 && (
+        <div className="note" role="status" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+          <Icon.Check size={18} className="ok" />
+          <span style={{ flex: '1 1 260px' }}>{queue.queued} approved, sending within your limits.</span>
+          <Link to="/review?tab=sending">See the queue</Link>
+        </div>
+      )}
     </>
   );
 }
@@ -97,7 +122,7 @@ function Week({ week }: { week: Overview['week'] }) {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <span style={{ font: "700 44px/1 'Bricolage Grotesque', sans-serif" }}>{week.sent}</span>
           <span className="mut" style={{ fontSize: 15 }}>
-            {week.sent === 1 ? 'proposal sent' : 'proposals sent'}
+            sent ({week.sentByApp} by the app)
             {week.sent > 0 && `, ${plural(replies, 'reply', 'replies')} so far`}
           </span>
         </div>
@@ -119,7 +144,7 @@ function Week({ week }: { week: Overview['week'] }) {
             </div>
           ) : (
             <p className="mut" style={{ margin: '12px 0 0', fontSize: 13 }}>
-              Proposals you mark as submitted show up here.
+              Proposals you send show up here.
             </p>
           )}
         </div>
@@ -166,6 +191,7 @@ export function HomePage() {
       </div>
 
       <AccountBanners accounts={o.accounts} />
+      <QueueBanners queue={o.queue} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
         <section className="panel" style={{ flex: '2 1 520px', minWidth: 0 }} aria-labelledby="h-wait">

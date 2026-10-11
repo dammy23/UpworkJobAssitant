@@ -12,8 +12,18 @@ const EnvSchema = z.object({
   DATA_DIR: z.string().default('./data'),
   /** Turn the background schedule off (e.g. in tests). */
   SCHEDULER: z.enum(['on', 'off']).default('on'),
-  /** Base URL of the web UI, used in Telegram links. */
-  WEB_BASE_URL: z.string().default('http://localhost:5173'),
+  /** Address of the web app, used in Telegram links and after Upwork sign-in. */
+  WEB_BASE_URL: z.string().default('http://localhost:4000'),
+  /** Must match the Callback URL on your Upwork API key. */
+  UPWORK_REDIRECT_URI: z.string().default('http://localhost:4000/api/upwork/callback'),
+  /** Turn the proposal send queue off (proposals stay queued). */
+  SEND_QUEUE: z.enum(['on', 'off']).default('on'),
+
+  // Service addresses. Only change these to point at a test double.
+  UPWORK_AUTHORIZE_URL: z.string().default('https://www.upwork.com/ab/account-security/oauth2/authorize'),
+  UPWORK_TOKEN_URL: z.string().default('https://www.upwork.com/api/v3/oauth2/token'),
+  UPWORK_GRAPHQL_URL: z.string().default('https://api.upwork.com/graphql'),
+  TELEGRAM_API_URL: z.string().default('https://api.telegram.org'),
 });
 
 // Treat empty strings in .env as "not set".

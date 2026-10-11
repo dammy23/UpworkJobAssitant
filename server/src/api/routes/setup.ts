@@ -6,7 +6,8 @@ import { aiProviders, appliers, upworkAccounts, type AiProviderId } from '../../
 import { buildLlm } from '../../pipeline/llm.js';
 import { findLatestChatId, sendTelegramMessage } from '../../pipeline/notify.js';
 import { FixtureJobSource } from '../../pipeline/sources/fixtures.js';
-import { accountColumns, toAccountView } from '../../services/accounts.js';
+import { accountColumns, beginConnect, completeConnect, toAccountView } from '../../services/accounts.js';
+import { config } from '../../config.js';
 import {
   credentialsOf,
   isConfigured,
@@ -30,7 +31,17 @@ const AccountInputSchema = z.object({
   clientSecret: z.string().max(2000).optional(),
   accessToken: z.string().max(5000).optional(),
   refreshToken: z.string().max(5000).optional(),
+  dailyProposalCap: z.number().int().min(1, 'Allow at least 1 proposal a day').max(50).optional(),
+  minGapSeconds: z.number().int().min(60, 'Leave at least a minute between sends').max(6 * 3600).optional(),
+  weeklyConnectsBudget: z.number().int().min(0).max(10_000).nullable().optional(),
 });
+
+/** Where to send the browser after Upwork sign-in. */
+function settingsUrl(params: Record<string, string>): string {
+  const u = new URL('/settings', config.WEB_BASE_URL);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return u.toString();
+}
 
 export async function setupRoutes(app: FastifyInstance) {
   // ---- Upwork accounts ----
@@ -54,6 +65,43 @@ export async function setupRoutes(app: FastifyInstance) {
     const [row] = await db
       .update(upworkAccounts)
       .set({ ...accountColumns(input), updatedAt: new Date() })
+      .where(eq(upworkAccounts.id, req.params.id))
+      .returning();
+    if (!row) throw notFound('Account');
+    return toAccountView(row);
+  });
+
+  /** Opens Upwork's approval page for this account. Use as a normal link, not from fetch. */
+  app.get<{ Params: { id: string } }>('/accounts/:id/upwork/connect', async (req, reply) => {
+    const [row] = await db.select().from(upworkAccounts).where(eq(upworkAccounts.id, req.params.id));
+    if (!row) return reply.redirect(settingsUrl({ upworkError: 'That account no longer exists.' }));
+    try {
+      return reply.redirect(await beginConnect(row));
+    } catch (err) {
+      return reply.redirect(settingsUrl({ upworkError: (err as Error).message, account: row.id }));
+    }
+  });
+
+  /** Upwork sends the browser back here after the user approves (or declines) access. */
+  app.get<{ Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
+    '/upwork/callback',
+    async (req, reply) => {
+      const { code, state, error, error_description } = req.query;
+      if (error) return reply.redirect(settingsUrl({ upworkError: error_description || `Upwork said: ${error}` }));
+      if (!code || !state) return reply.redirect(settingsUrl({ upworkError: 'Upwork did not send back a sign-in code.' }));
+      try {
+        const acc = await completeConnect(state, code);
+        return reply.redirect(settingsUrl({ connected: acc.id }));
+      } catch (err) {
+        return reply.redirect(settingsUrl({ upworkError: (err as Error).message }));
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/accounts/:id/upwork/disconnect', async (req) => {
+    const [row] = await db
+      .update(upworkAccounts)
+      .set({ ...accountColumns({ accessToken: '', refreshToken: '' }), updatedAt: new Date() })
       .where(eq(upworkAccounts.id, req.params.id))
       .returning();
     if (!row) throw notFound('Account');
@@ -160,19 +208,15 @@ export async function setupRoutes(app: FastifyInstance) {
   app.post('/settings/telegram/find-chat', async () => {
     const t = await getTelegram();
     if (!t.botToken) return { chatId: null, message: 'Save the bot token first.' };
-    try {
-      const chatId = await findLatestChatId(t.botToken);
-      if (!chatId) return { chatId: null, message: 'No messages yet. Send any message to your bot in Telegram, then try again.' };
-      await setTelegram({ chatId });
-      return { chatId, message: 'Found your chat and saved it.' };
-    } catch (err) {
-      return { chatId: null, message: `Telegram said: ${(err as Error).message}` };
-    }
+    const chatId = await findLatestChatId();
+    if (!chatId) return { chatId: null, message: 'No message yet. Send any message to your bot in Telegram, wait a few seconds, then try again.' };
+    await setTelegram({ chatId });
+    return { chatId, message: 'Found your chat and saved it.' };
   });
 
   app.post('/settings/telegram/test', async () => {
     try {
-      await sendTelegramMessage('Job Assistant is connected. New drafts will arrive here.');
+      await sendTelegramMessage('Job Assistant is connected. New drafts will arrive here with Submit and Skip buttons.');
       return { ok: true, message: 'Sent. Check Telegram.' };
     } catch (err) {
       return { ok: false, message: (err as Error).message };

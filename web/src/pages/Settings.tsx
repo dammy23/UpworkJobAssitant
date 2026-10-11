@@ -1,11 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { api, applicationsCsvUrl, errorMessage } from '../api/client';
+import { api, applicationsCsvUrl, errorMessage, upworkConnectUrl } from '../api/client';
 import { qk, useAccounts, useProviders, useTelegram } from '../api/queries';
 import type { Account, AccountInput, Provider, ProviderId, ProviderPatch } from '../api/types';
 import { Avatar, ErrorState, Icon, Loading, Switch } from '../components/ui';
-import { plural, relTime } from '../lib/format';
+import { numOrNull, plural, relTime, shortDate } from '../lib/format';
 import { usePageTitle, useTick } from '../lib/hooks';
 
 /* ---------------- Shared ---------------- */
@@ -29,26 +29,41 @@ export const PROVIDER_LOOK: Record<ProviderId, { mono: string; bg: string; fg: s
 };
 
 function accountState(a: Account): { cls: string; label: string } {
-  if (a.status === 'connected') return { cls: 'state good', label: 'Connected' };
-  if (a.status === 'sample') return { cls: 'state wait', label: a.hasClientId ? 'Waiting for Upwork to approve the key' : 'Using sample jobs' };
+  if (a.status === 'connected') return { cls: 'state good', label: 'Signed in to Upwork' };
+  if (a.status === 'sample') return { cls: 'state wait', label: a.canConnect ? 'Not signed in yet' : 'Using sample jobs' };
   return { cls: 'state bad', label: 'Needs attention' };
 }
 
 function accountDetail(a: Account): string {
   const parts = [a.email, plural(a.applierCount, 'applier')].filter(Boolean);
-  if (a.status === 'sample') parts.push('using sample jobs for now');
+  if (a.status === 'sample') parts.push('sample jobs and test sends for now');
   else if (a.lastSearchAt) parts.push(`last search ${relTime(a.lastSearchAt)}`);
   return parts.join(', ');
 }
 
+function timeOfDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${shortDate(iso)}, ${hm}`;
+}
+
+function usageLine(a: Account): string {
+  const u = a.usage;
+  const budget = a.limits.weeklyConnectsBudget;
+  return `${u.sentToday} sent today · ${u.connectsThisWeek}${budget !== null ? ` of ${budget}` : ''} Connects this week`;
+}
+
+export const CALLBACK_URL = 'http://localhost:4000/api/upwork/callback';
+
 /* ---------------- Accounts ---------------- */
 
 type SecretKey = 'clientId' | 'clientSecret' | 'accessToken' | 'refreshToken';
-const SECRET_FIELDS: { key: SecretKey; label: string; hint?: string }[] = [
-  { key: 'clientId', label: 'Client ID', hint: 'From your API key page on upwork.com/developer.' },
-  { key: 'clientSecret', label: 'Client secret' },
-  { key: 'accessToken', label: 'Access token', hint: 'Without one, this account uses sample jobs.' },
-  { key: 'refreshToken', label: 'Refresh token' },
+const SECRET_FIELDS: { key: SecretKey; label: string; hint?: string; advanced?: boolean }[] = [
+  { key: 'clientId', label: 'Client ID', hint: 'Shown as the key on your API key page.' },
+  { key: 'clientSecret', label: 'Client secret', hint: 'Shown as the secret on the same page.' },
+  { key: 'accessToken', label: 'Access token', hint: 'Only if you already have one. Connect with Upwork fills this in for you.', advanced: true },
+  { key: 'refreshToken', label: 'Refresh token', advanced: true },
 ];
 
 export function AccountForm({
@@ -72,10 +87,13 @@ export function AccountForm({
   const [err, setErr] = useState<string | null>(null);
   const idp = account ? 'acc-' + account.id : 'acc-new';
 
-  // The API only says whether a client id and access token exist.
+  const [advanced, setAdvanced] = useState(false);
+
+  // The API only says whether each secret exists, never its value.
   const present = (k: SecretKey): boolean => {
     if (!account) return false;
-    if (k === 'clientId' || k === 'clientSecret') return account.hasClientId;
+    if (k === 'clientId') return account.hasClientId;
+    if (k === 'clientSecret') return account.hasClientSecret;
     return account.hasAccessToken;
   };
 
@@ -103,37 +121,7 @@ export function AccountForm({
   };
 
   const nameErr = tried && !name.trim();
-  return (
-    <form onSubmit={submit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="grid2">
-        <div>
-          <label className="lbl" htmlFor={idp + '-name'}>
-            Whose account is it?
-          </label>
-          <input
-            className="in"
-            id={idp + '-name'}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            aria-invalid={nameErr}
-            aria-describedby={nameErr ? idp + '-name-e' : undefined}
-            autoComplete="off"
-          />
-          {nameErr && (
-            <div className="field-err" id={idp + '-name-e'}>
-              Add a name, such as the person's first name.
-            </div>
-          )}
-        </div>
-        <div>
-          <label className="lbl" htmlFor={idp + '-email'}>
-            Upwork email
-          </label>
-          <input className="in" id={idp + '-email'} type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" />
-        </div>
-      </div>
-      <div className="grid2">
-        {SECRET_FIELDS.map((f) => {
+  const secretField = (f: (typeof SECRET_FIELDS)[number]) => {
           const has = present(f.key) && !clear[f.key];
           return (
             <div key={f.key}>
@@ -163,7 +151,57 @@ export function AccountForm({
               </div>
             </div>
           );
-        })}
+        };
+
+  return (
+    <form onSubmit={submit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="grid2">
+        <div>
+          <label className="lbl" htmlFor={idp + '-name'}>
+            Whose account is it?
+          </label>
+          <input
+            className="in"
+            id={idp + '-name'}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            aria-invalid={nameErr}
+            aria-describedby={nameErr ? idp + '-name-e' : undefined}
+            autoComplete="off"
+          />
+          {nameErr && (
+            <div className="field-err" id={idp + '-name-e'}>
+              Add a name, such as the person's first name.
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="lbl" htmlFor={idp + '-email'}>
+            Upwork email
+          </label>
+          <input className="in" id={idp + '-email'} type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" />
+        </div>
+      </div>
+      <div className="note small" style={{ lineHeight: 1.55 }}>
+        The client ID and secret come from your Upwork API key: on upwork.com/developer, open your key and copy its key and secret. The key's Callback URL must be{' '}
+        <code style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{CALLBACK_URL}</code>, so Upwork can send you back here after you sign in.
+      </div>
+      <div className="grid2">
+        {SECRET_FIELDS.filter((f) => !f.advanced).map(secretField)}
+      </div>
+      <div>
+        <button type="button" className="linkbtn" style={{ fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-expanded={advanced} aria-controls={idp + '-adv'} onClick={() => setAdvanced((v) => !v)}>
+          <Icon.Next size={14} className="chev" />
+          Advanced
+        </button>
+        {advanced && (
+          <div id={idp + '-adv'} style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <p className="mut" style={{ margin: 0, fontSize: 13.5 }}>
+              Paste tokens by hand only if you can't use Connect with Upwork.
+            </p>
+            <div className="grid2">{SECRET_FIELDS.filter((f) => f.advanced).map(secretField)}</div>
+          </div>
+        )}
       </div>
       <p className="mut" style={{ margin: 0, fontSize: 13 }}>
         Keys are stored on this computer and never shown again. Leave a field empty to keep what is saved.
@@ -188,13 +226,143 @@ export function AccountForm({
   );
 }
 
-function AccountsSection({ highlightNew }: { highlightNew: boolean }) {
+
+/* ---------------- Sending limits ---------------- */
+
+const GAP_MINUTES = [1, 2, 3, 5, 10, 15, 30];
+
+function LimitsForm({ account }: { account: Account }) {
+  const qc = useQueryClient();
+  const idp = 'lim-' + account.id;
+  const [cap, setCap] = useState(String(account.limits.dailyProposalCap));
+  const [gap, setGap] = useState(account.limits.minGapSeconds);
+  const [budget, setBudget] = useState(account.limits.weeklyConnectsBudget === null ? '' : String(account.limits.weeklyConnectsBudget));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+  const capNum = numOrNull(cap);
+  const capErr = capNum === null || !Number.isInteger(capNum) || capNum < 1 || capNum > 50;
+  const gapOptions = GAP_MINUTES.map((m) => m * 60);
+  if (!gapOptions.includes(gap)) gapOptions.push(gap);
+  gapOptions.sort((a, b) => a - b);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (capErr) {
+      setMsg({ tone: 'err', text: 'Most proposals a day must be a whole number from 1 to 50.' });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.updateAccount(account.id, { dailyProposalCap: capNum, minGapSeconds: gap, weeklyConnectsBudget: numOrNull(budget) });
+      await Promise.all([qc.invalidateQueries({ queryKey: qk.accounts }), qc.invalidateQueries({ queryKey: qk.draftsAll })]);
+      setMsg({ tone: 'ok', text: 'Limits saved.' });
+    } catch (err) {
+      setMsg({ tone: 'err', text: `Couldn't save the limits: ${errorMessage(err)}.` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} noValidate aria-labelledby={idp + '-h'} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div>
+        <h4 className="h3" id={idp + '-h'} style={{ fontSize: 16 }}>
+          Sending limits
+        </h4>
+        <p className="mut" style={{ margin: '4px 0 0', fontSize: 13.5, lineHeight: 1.5 }}>
+          Approved proposals are sent one at a time from this account, within these limits.
+        </p>
+      </div>
+      <div className="grid2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        <div>
+          <label className="lbl" htmlFor={idp + '-cap'}>
+            Most proposals a day
+          </label>
+          <input
+            className="in"
+            id={idp + '-cap'}
+            type="number"
+            min={1}
+            max={50}
+            step={1}
+            value={cap}
+            onChange={(e) => setCap(e.target.value)}
+            aria-invalid={capErr}
+            aria-describedby={idp + '-cap-h'}
+          />
+          <div className={capErr ? 'field-err' : 'hint'} id={idp + '-cap-h'}>
+            From 1 to 50.
+          </div>
+        </div>
+        <div>
+          <label className="lbl" htmlFor={idp + '-gap'}>
+            Minimum gap between sends
+          </label>
+          <select className="sel" id={idp + '-gap'} style={{ width: '100%', minHeight: 44 }} value={gap} onChange={(e) => setGap(Number(e.target.value))}>
+            {gapOptions.map((sec) => (
+              <option key={sec} value={sec}>
+                {sec % 60 === 0 ? plural(sec / 60, 'minute') : plural(sec, 'second')}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="lbl" htmlFor={idp + '-budget'}>
+            Weekly Connects budget
+          </label>
+          <input
+            className="in"
+            id={idp + '-budget'}
+            inputMode="numeric"
+            value={budget}
+            onChange={(e) => setBudget(e.target.value.replace(/[^\d]/g, ''))}
+            aria-describedby={idp + '-budget-h'}
+          />
+          <div className="hint" id={idp + '-budget-h'}>
+            Leave empty for no budget.
+          </div>
+        </div>
+      </div>
+      <div className="mut" style={{ fontSize: 13.5 }}>
+        {usageLine(account)}
+        {account.usage.nextSendAt && ` · Next send after ${timeOfDay(account.usage.nextSendAt)}`}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+        <button type="submit" className="btn btn-p btn-s" disabled={busy}>
+          {busy ? <span className="spinner" /> : null}
+          Save limits
+        </button>
+        <MsgLine msg={msg} />
+      </div>
+    </form>
+  );
+}
+
+function AccountsSection({ highlightNew, connectedId, upworkError, onDismissNotice }: { highlightNew: boolean; connectedId: string | null; upworkError: string | null; onDismissNotice: () => void }) {
   useTick();
   const qc = useQueryClient();
   const q = useAccounts();
   const [editing, setEditing] = useState<string | null>(highlightNew ? 'new' : null);
   const [msg, setMsg] = useState<Msg>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+
+  const disconnect = async (a: Account) => {
+    if (!window.confirm(`Disconnect ${a.name}'s Upwork account? The app stops sending from it and goes back to sample jobs and test sends until you connect again.`)) return;
+    setDisconnecting(a.id);
+    setMsg(null);
+    try {
+      await api.disconnectAccount(a.id);
+      await Promise.all([qc.invalidateQueries({ queryKey: qk.accounts }), qc.invalidateQueries({ queryKey: qk.overview }), qc.invalidateQueries({ queryKey: qk.draftsAll })]);
+      setMsg({ tone: 'ok', text: `${a.name}'s Upwork account was disconnected.` });
+    } catch (e) {
+      setMsg({ tone: 'err', text: `Couldn't disconnect it: ${errorMessage(e)}.` });
+    } finally {
+      setDisconnecting(null);
+    }
+  };
+  const connectedName = connectedId ? (q.data?.find((a) => a.id === connectedId)?.name ?? null) : null;
 
   const remove = async (a: Account) => {
     if (!window.confirm(`Remove ${a.name}'s Upwork account? Its saved keys are deleted.`)) return;
@@ -219,8 +387,8 @@ function AccountsSection({ highlightNew }: { highlightNew: boolean }) {
         <div>
           <h2 className="h2" id="h-acc">Upwork accounts</h2>
           <p className="mut" style={{ margin: '6px 0 0', fontSize: 14.5, lineHeight: 1.5, maxWidth: '62ch' }}>
-            Each account needs its own API key from upwork.com/developer. Keys are only used to search jobs. Upwork allows one freelancer account per person, so add accounts for teammates, not
-            second profiles.
+            Each account needs its own API key from upwork.com/developer. The app uses it to search for jobs and to send the proposals you approve, from that account. Upwork allows one
+            freelancer account per person, so add accounts for teammates, not second profiles.
           </p>
         </div>
         <button type="button" className="btn btn-p" onClick={() => setEditing('new')} aria-expanded={editing === 'new'}>
@@ -230,6 +398,22 @@ function AccountsSection({ highlightNew }: { highlightNew: boolean }) {
       {highlightNew && (
         <div className="note" role="status">
           Add an Upwork account first. Appliers search for jobs on an account.
+        </div>
+      )}
+      {connectedId && (
+        <div className="note note-ok" role="status" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+          <span style={{ flex: '1 1 240px' }}>{connectedName ? `${connectedName}'s Upwork account is connected.` : 'The Upwork account is connected.'} Proposals you approve are now sent from it.</span>
+          <button type="button" className="btn btn-q btn-s" onClick={onDismissNotice}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {upworkError && (
+        <div className="note note-err" role="alert" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+          <span style={{ flex: '1 1 240px' }}>Couldn't connect to Upwork: {upworkError}</span>
+          <button type="button" className="btn btn-q btn-s" onClick={onDismissNotice}>
+            Dismiss
+          </button>
         </div>
       )}
       <MsgLine msg={msg} />
@@ -274,17 +458,63 @@ function AccountsSection({ highlightNew }: { highlightNew: boolean }) {
                     <i />
                     {st.label}
                   </span>
-                  <button type="button" className="btn btn-s" aria-expanded={open} onClick={() => setEditing(open ? null : a.id)}>
-                    {open ? 'Close' : a.status === 'sample' ? 'Enter approved key' : 'Manage'}
+                  <button type="button" className="btn btn-s" aria-expanded={open} aria-controls={'acc-body-' + a.id} onClick={() => setEditing(open ? null : a.id)}>
+                    {open ? 'Close' : 'Manage'}
                   </button>
                 </div>
+                <div className="acc-sub">
+                  {a.status === 'connected' ? (
+                    <>
+                      <span style={{ flex: '1 1 260px' }}>
+                        Signed in as <strong>{a.upworkUserName || a.name}</strong>
+                        {a.connectedAt ? ` since ${shortDate(a.connectedAt)}` : ''}. Approved proposals are sent from this account.
+                      </span>
+                      <button type="button" className="btn btn-s btn-q btn-danger" onClick={() => disconnect(a)} disabled={disconnecting === a.id}>
+                        {disconnecting === a.id ? <span className="spinner" /> : null}
+                        Disconnect<span className="sr-only"> {a.name}'s Upwork account</span>
+                      </button>
+                    </>
+                  ) : a.canConnect ? (
+                    <>
+                      <span style={{ flex: '1 1 260px' }}>Sign in to Upwork so the app can send approved proposals from {a.name}'s account. Until then, sends are test sends.</span>
+                      <a className="btn btn-p btn-s" href={upworkConnectUrl(a.id)}>
+                        Connect with Upwork<span className="sr-only">, {a.name}'s account</span>
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ flex: '1 1 260px' }}>Add the client ID and secret from your Upwork API key first. Until then, this account uses sample jobs and test sends.</span>
+                      {!open && (
+                        <button type="button" className="btn btn-s" onClick={() => setEditing(a.id)}>
+                          Add the key
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {!open && (
+                  <div className="acc-sub mut" style={{ fontSize: 13, marginTop: 8 }}>
+                    {usageLine(a)}
+                    {a.usage.nextSendAt && ` · Next send after ${timeOfDay(a.usage.nextSendAt)}`}
+                  </div>
+                )}
                 {a.lastError && (
                   <div className="note note-err" style={{ marginTop: 12 }}>
                     Last search failed: {a.lastError}
                   </div>
                 )}
                 {open && (
-                  <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div id={'acc-body-' + a.id} style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 18 }}>
+                    <LimitsForm account={a} />
+                    <div style={{ borderTop: '1px solid #E4EAE8', paddingTop: 16 }}>
+                      <h4 className="h3" style={{ fontSize: 16, marginBottom: 12 }}>
+                        Name and API key
+                      </h4>
+                      {!a.canConnect && a.status !== 'connected' && (
+                        <p className="warn" style={{ margin: '0 0 12px', fontSize: 13.5, fontWeight: 600 }}>
+                          Add the client ID and secret from your Upwork API key first.
+                        </p>
+                      )}
                     <AccountForm
                       account={a}
                       onCancel={() => setEditing(null)}
@@ -293,6 +523,7 @@ function AccountsSection({ highlightNew }: { highlightNew: boolean }) {
                         setMsg({ tone: 'ok', text: `${s.name}'s account was saved.` });
                       }}
                     />
+                    </div>
                     <div style={{ borderTop: '1px solid #E4EAE8', paddingTop: 14 }}>
                       <button type="button" className="btn btn-s btn-q btn-danger" onClick={() => remove(a)} disabled={deleting === a.id}>
                         {deleting === a.id ? <span className="spinner" /> : null}
@@ -707,7 +938,7 @@ export function TelegramForm({ compact = false, onConnected }: { compact?: boole
           </label>
           <input className="in" id={compact ? 'tg-chat-s' : 'tg-chat'} inputMode="numeric" value={chatId} onChange={(e) => setChatId(e.target.value)} aria-describedby="tg-chat-h" />
           <div className="hint" id="tg-chat-h">
-            Message your bot once, then press Find my chat.
+            Send any message to your bot first, then press Find my chat.
           </div>
         </div>
       </div>
@@ -735,7 +966,18 @@ export function TelegramForm({ compact = false, onConnected }: { compact?: boole
 export function SettingsPage() {
   usePageTitle('Settings');
   const loc = useLocation();
-  const needAccount = new URLSearchParams(loc.search).has('needAccount');
+  const [params, setParams] = useSearchParams();
+  const needAccount = params.has('needAccount');
+  // Upwork sends the browser back here after sign-in; show the result once, then tidy the address.
+  const [upworkNotice, setUpworkNotice] = useState(() => ({ connectedId: params.get('connected'), error: params.get('upworkError') }));
+  useEffect(() => {
+    if (!params.has('connected') && !params.has('upworkError')) return;
+    const next = new URLSearchParams(params);
+    next.delete('connected');
+    next.delete('upworkError');
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Scroll to the hash once the content has rendered.
   useEffect(() => {
@@ -757,14 +999,20 @@ export function SettingsPage() {
         </nav>
 
         <div style={{ flex: '1 1 640px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 40 }}>
-          <AccountsSection highlightNew={needAccount} />
+          <AccountsSection
+            highlightNew={needAccount}
+            connectedId={upworkNotice.connectedId}
+            upworkError={upworkNotice.error}
+            onDismissNotice={() => setUpworkNotice({ connectedId: null, error: null })}
+          />
           <ProvidersSection />
 
           <section id="alerts" aria-labelledby="h-tg" style={{ display: 'flex', flexDirection: 'column', gap: 16, scrollMarginTop: 16 }}>
             <div>
               <h2 className="h2" id="h-tg">Telegram alerts</h2>
               <p className="mut" style={{ margin: '6px 0 0', fontSize: 14.5, lineHeight: 1.5, maxWidth: '62ch' }}>
-                Get each new draft on your phone with a link to the job. Create a bot with BotFather in Telegram, then paste its token here.
+                Get each new draft on your phone with Submit and Skip buttons. Tapping Submit approves that one proposal, and it is then sent within the account's limits. Create a bot
+                with BotFather in Telegram, then paste its token here.
               </p>
             </div>
             <div className="box" style={{ padding: 22 }}>
@@ -779,7 +1027,7 @@ export function SettingsPage() {
                 <div style={{ flex: '1 1 260px' }}>
                   <div style={{ fontWeight: 600 }}>Download applied jobs</div>
                   <div className="mut" style={{ fontSize: 13.5, marginTop: 3 }}>
-                    Every proposal you marked as submitted, with its status, notes and Connects, as a CSV file.
+                    Every sent proposal, whether you or the app sent it, with its status, notes and Connects, as a CSV file.
                   </div>
                 </div>
                 <a className="btn btn-s" href={applicationsCsvUrl} download>

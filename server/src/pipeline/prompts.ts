@@ -115,6 +115,25 @@ export function draftingMessages(ctx: ApplierContext, job: PromptJob): ChatMessa
   ];
 }
 
+export function answerMessages(ctx: ApplierContext, job: PromptJob, questions: string[], coverLetter: string): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You answer an Upwork client’s screening questions for a freelancer, in the first person, as the freelancer. ' +
+        'Use only facts from the freelancer’s profile, resume and past work; never invent experience, links or numbers. ' +
+        'If a question asks for something you do not have (for example a link), say briefly what the freelancer can share on request. ' +
+        'Keep each answer to one to three sentences. Reply with JSON only: {"answers": [string, ...]} in the same order as the questions.',
+    },
+    {
+      role: 'user',
+      content:
+        `FREELANCER\n${describeFreelancer(ctx)}\n\nJOB POST\n${describeJob(job)}\n\nCOVER LETTER ALREADY WRITTEN\n${coverLetter}\n\n` +
+        `QUESTIONS\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`,
+    },
+  ];
+}
+
 const REWRITE_ASKS: Record<RewriteInstruction, string> = {
   new: 'Write a fresh version with a different opening and a different past project if one fits.',
   shorter: 'Make it about half as long. Keep the opening idea and the closing question.',

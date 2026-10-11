@@ -16,6 +16,9 @@ export interface NormalizedJob {
   clientTotalSpend: number | null; // USD
   proposalsCount: number | null;
   postedAt: Date | null;
+  /** The client's screening questions, answered in the proposal. */
+  questions: string[];
+  connectsRequired: number | null;
   raw: unknown;
 }
 

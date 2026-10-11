@@ -16,11 +16,18 @@ export type Account = {
   email: string;
   status: AccountStatus;
   hasClientId: boolean;
+  hasClientSecret: boolean;
   hasAccessToken: boolean;
+  canConnect: boolean;
+  connectedAt: string | null;
+  upworkUserName: string | null;
   lastSearchAt: string | null;
   lastError: string | null;
   applierCount: number;
+  limits: AccountLimits;
+  usage: { sentToday: number; connectsThisWeek: number; nextSendAt: string | null };
 };
+export type AccountLimits = { dailyProposalCap: number; minGapSeconds: number; weeklyConnectsBudget: number | null };
 export type AccountInput = {
   name: string;
   email?: string;
@@ -28,6 +35,9 @@ export type AccountInput = {
   clientSecret?: string;
   accessToken?: string;
   refreshToken?: string;
+  dailyProposalCap?: number;
+  minGapSeconds?: number;
+  weeklyConnectsBudget?: number | null;
 };
 
 // AI providers
@@ -82,6 +92,7 @@ export type ApplierInput = {
   scoreThreshold: number;
   scheduleMinutes: number;
   telegramEnabled: boolean;
+  defaultDuration: string;
 };
 export type MaterialKind = 'resume' | 'video' | 'portfolio';
 export type Material = {
@@ -146,6 +157,8 @@ export type JobView = {
   clientTotalSpend: number | null;
   proposalsCount: number | null;
   postedAt: string | null;
+  questions: string[];
+  connectsRequired: number | null;
 };
 export type DraftAttachment = {
   id: string;
@@ -155,19 +168,37 @@ export type DraftAttachment = {
   url: string | null;
   downloadUrl: string | null;
 };
+export const DURATIONS = ['Less than 1 month', '1 to 3 months', '3 to 6 months', 'More than 6 months'] as const;
+/** 'sent' and 'skipped' only come from GET /drafts/:id (e.g. an old Telegram link). */
+export type DraftState = 'ready' | 'queued' | 'sending' | 'failed' | 'sent' | 'skipped';
+export type SendMode = 'api' | 'simulated';
+export type DraftAnswer = { question: string; answer: string };
 export type Draft = {
   id: string;
+  state: DraftState;
   score: number;
   reasons: string;
   redFlags: string;
   draft: string;
   createdAt: string;
+  bidAmount: number | null;
+  duration: string | null;
+  answers: DraftAnswer[];
+  problems: string[];
+  sendMode: SendMode;
+  queuedAt: string | null;
+  approvedVia: 'app' | 'telegram' | null;
+  waitReason: string | null;
+  submitError: string | null;
   applier: ApplierRef & { maxWords: number };
   account: AccountRef;
   job: JobView;
   attachments: DraftAttachment[];
 };
 export type DraftSort = 'score' | 'newest';
+export type DraftEdits = { draft?: string; bidAmount?: number | null; duration?: string | null; answers?: DraftAnswer[] };
+export type SubmitItem = { id: string } & DraftEdits;
+export type SubmitResult = { results: { id: string; ok: boolean; error?: string }[]; drafts: Draft[]; queued: number };
 export type RewriteInstruction = 'new' | 'shorter' | 'warmer' | 'specific';
 export type SkipReason = 'skip' | 'bad_match';
 
@@ -178,6 +209,8 @@ export type Application = {
   connectsSpent: number | null;
   notes: string;
   proposalText: string;
+  bidAmount: number | null;
+  submittedVia: 'manual' | 'api' | 'simulated';
   appliedAt: string;
   updatedAt: string;
   job: { id: string; title: string; url: string; budgetLabel: string };
@@ -194,6 +227,7 @@ export type ApplicationPatch = { status?: AppStatus; notes?: string; connectsSpe
 // Home
 export type Overview = {
   pendingDrafts: number;
+  queue: { queued: number; failed: number };
   jobsCheckedLast24h: number;
   topDrafts: {
     id: string;
@@ -204,7 +238,7 @@ export type Overview = {
     applier: ApplierRef;
     account: AccountRef;
   }[];
-  week: { sent: number; connects: number; byStatus: Record<AppStatus, number> };
+  week: { sent: number; sentByApp: number; connects: number; byStatus: Record<AppStatus, number> };
   appliers: {
     id: string;
     name: string;
